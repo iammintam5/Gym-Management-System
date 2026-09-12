@@ -1,0 +1,30 @@
+{
+  "name": "@gym/contracts",
+  "version": "0.1.0",
+  "private": true,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsc -p tsconfig.json --watch --preserveWatchOutput",
+    "lint": "eslint .",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test test/*.test.cjs"
+  },
+  "devDependencies": {
+    "@gym/eslint-config": "workspace:*",
+    "@gym/typescript-config": "workspace:*",
+    "typescript": "^5.9.3",
+    "eslint": "^9.39.0",
+    "@types/node": "^24.0.0"
+  }
+}

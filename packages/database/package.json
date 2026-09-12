@@ -1,0 +1,44 @@
+{
+  "name": "@gym/database",
+  "version": "0.1.0",
+  "private": true,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "pnpm db:generate && tsc -p tsconfig.json",
+    "dev": "tsc -p tsconfig.json --watch --preserveWatchOutput",
+    "lint": "eslint .",
+    "typecheck": "tsc -p tsconfig.tools.json --noEmit",
+    "db:generate": "prisma generate",
+    "db:validate": "prisma validate",
+    "db:migrate": "prisma migrate dev",
+    "db:deploy": "prisma migrate deploy",
+    "db:seed": "prisma db seed",
+    "db:studio": "prisma studio"
+  },
+  "devDependencies": {
+    "@gym/eslint-config": "workspace:*",
+    "@gym/typescript-config": "workspace:*",
+    "typescript": "^5.9.3",
+    "eslint": "^9.39.0",
+    "@types/node": "^24.0.0",
+    "prisma": "^7.5.0",
+    "tsx": "^4.21.0",
+    "@types/pg": "^8.16.0"
+  },
+  "dependencies": {
+    "@prisma/client": "^7.5.0",
+    "@prisma/adapter-pg": "^7.5.0",
+    "pg": "^8.19.0",
+    "dotenv": "^17.3.0"
+  }
+}

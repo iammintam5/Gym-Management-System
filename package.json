@@ -1,0 +1,32 @@
+{
+  "name": "gym-management",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@10.32.1",
+  "engines": {
+    "node": ">=22.12.0",
+    "pnpm": ">=10 <11"
+  },
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "test": "turbo run test",
+    "typecheck": "turbo run typecheck",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "env:setup": "node scripts/setup-env.mjs",
+    "db:up": "docker compose up -d postgres redis",
+    "db:down": "docker compose down",
+    "db:generate": "pnpm --filter @gym/database db:generate",
+    "db:validate": "pnpm --filter @gym/database db:validate",
+    "db:migrate": "pnpm --filter @gym/database db:migrate",
+    "db:deploy": "pnpm --filter @gym/database db:deploy",
+    "db:seed": "pnpm --filter @gym/database db:seed",
+    "db:studio": "pnpm --filter @gym/database db:studio"
+  },
+  "devDependencies": {
+    "turbo": "^2.8.0",
+    "prettier": "^3.8.0"
+  }
+}

@@ -1,0 +1,459 @@
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  moduleFormat = "cjs"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserRole {
+  MEMBER
+  PT
+  STAFF
+  ADMIN
+}
+
+// EXPIRED is derived in contracts from ACTIVE + endDate; no cron write required.
+enum SubscriptionStatus {
+  PENDING
+  ACTIVE
+  SUSPENDED
+  CANCELLED
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  REFUNDED
+  CANCELLED
+}
+
+enum BookingStatus {
+  BOOKED
+  CANCELLED
+  COMPLETED
+  NO_SHOW
+}
+
+enum AttendanceStatus {
+  PENDING
+  PRESENT
+  ABSENT
+  NO_SHOW
+}
+
+enum QuotaTransactionType {
+  RESERVE
+  USE
+  REFUND
+  ADJUST
+}
+
+enum CheckinStatus {
+  ACCEPTED
+  REJECTED
+}
+
+enum ScheduleStatus {
+  SCHEDULED
+  CANCELLED
+  COMPLETED
+}
+
+enum FreezeStatus {
+  REQUESTED
+  APPROVED
+  REJECTED
+  COMPLETED
+  CANCELLED
+}
+
+model User {
+  id                   String               @id @default(uuid()) @db.Uuid
+  email                String               @unique
+  passwordHash         String               @map("password_hash")
+  isActive             Boolean              @default(true) @map("is_active")
+  createdAt            DateTime             @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt            DateTime             @updatedAt @map("updated_at") @db.Timestamptz(3)
+  roles                UserRoleAssignment[]
+  memberProfile        MemberProfile?
+  employeeProfile      EmployeeProfile?
+  createdSubscriptions Subscription[]       @relation("SubscriptionCreator")
+  confirmedPayments    PaymentRecord[]      @relation("PaymentConfirmer")
+  quotaTransactions    QuotaTransaction[]   @relation("QuotaActor")
+  recordedCheckins     Checkin[]            @relation("CheckinRecorder")
+  approvedFreezes      SubscriptionFreeze[] @relation("FreezeApprover")
+  notifications        Notification[]
+  auditLogs            AuditLog[]
+
+  @@map("users")
+}
+
+model Role {
+  id    String               @id @default(uuid()) @db.Uuid
+  code  UserRole             @unique
+  name  String
+  users UserRoleAssignment[]
+
+  @@map("roles")
+}
+
+model UserRoleAssignment {
+  userId String @map("user_id") @db.Uuid
+  roleId String @map("role_id") @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role   Role   @relation(fields: [roleId], references: [id], onDelete: Restrict)
+
+  @@id([userId, roleId])
+  @@index([roleId])
+  @@map("user_roles")
+}
+
+model MemberProfile {
+  id            String         @id @default(uuid()) @db.Uuid
+  userId        String         @unique @map("user_id") @db.Uuid
+  fullName      String         @map("full_name")
+  phone         String?
+  dateOfBirth   DateTime?      @map("date_of_birth") @db.Date
+  createdAt     DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt     DateTime       @updatedAt @map("updated_at") @db.Timestamptz(3)
+  user          User           @relation(fields: [userId], references: [id], onDelete: Restrict)
+  subscriptions Subscription[]
+  checkins      Checkin[]
+  classBookings ClassBooking[]
+  ptBookings    PtBooking[]
+
+  @@map("member_profiles")
+}
+
+model EmployeeProfile {
+  id             String           @id @default(uuid()) @db.Uuid
+  userId         String           @unique @map("user_id") @db.Uuid
+  fullName       String           @map("full_name")
+  phone          String?
+  specialization String?
+  hiredAt        DateTime?        @map("hired_at") @db.Date
+  createdAt      DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime         @updatedAt @map("updated_at") @db.Timestamptz(3)
+  user           User             @relation(fields: [userId], references: [id], onDelete: Restrict)
+  availability   PtAvailability[]
+  classSchedules ClassSchedule[]
+  ptBookings     PtBooking[]
+
+  @@map("employee_profiles")
+}
+
+model MembershipPlan {
+  id            String            @id @default(uuid()) @db.Uuid
+  name          String
+  description   String?
+  durationDays  Int               @map("duration_days")
+  price         Decimal           @db.Decimal(14, 2)
+  isActive      Boolean           @default(true) @map("is_active")
+  createdAt     DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt     DateTime          @updatedAt @map("updated_at") @db.Timestamptz(3)
+  entitlements  PlanEntitlement[]
+  subscriptions Subscription[]
+
+  @@map("membership_plans")
+}
+
+model ServiceType {
+  id           String              @id @default(uuid()) @db.Uuid
+  code         String              @unique
+  name         String
+  entitlements PlanEntitlement[]
+  quotas       SubscriptionQuota[]
+
+  @@map("service_types")
+}
+
+model PlanEntitlement {
+  id            String         @id @default(uuid()) @db.Uuid
+  planId        String         @map("plan_id") @db.Uuid
+  serviceTypeId String         @map("service_type_id") @db.Uuid
+  // null = unlimited; absence of entitlement = no access.
+  allocated     Int?
+  plan          MembershipPlan @relation(fields: [planId], references: [id], onDelete: Restrict)
+  serviceType   ServiceType    @relation(fields: [serviceTypeId], references: [id], onDelete: Restrict)
+
+  @@unique([planId, serviceTypeId])
+  @@index([serviceTypeId])
+  @@map("plan_entitlements")
+}
+
+model Subscription {
+  id                     String               @id @default(uuid()) @db.Uuid
+  memberId               String               @map("member_id") @db.Uuid
+  planId                 String               @map("plan_id") @db.Uuid
+  previousSubscriptionId String?              @unique @map("previous_subscription_id") @db.Uuid
+  startDate              DateTime             @map("start_date") @db.Timestamptz(3)
+  endDate                DateTime             @map("end_date") @db.Timestamptz(3)
+  status                 SubscriptionStatus   @default(PENDING)
+  paymentStatus          PaymentStatus        @default(PENDING) @map("payment_status")
+  // Snapshot price; future plan edits must not rewrite purchased terms.
+  agreedPrice            Decimal              @map("agreed_price") @db.Decimal(14, 2)
+  activatedAt            DateTime?            @map("activated_at") @db.Timestamptz(3)
+  cancelledAt            DateTime?            @map("cancelled_at") @db.Timestamptz(3)
+  cancelReason           String?              @map("cancel_reason")
+  createdBy              String?              @map("created_by") @db.Uuid
+  createdAt              DateTime             @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt              DateTime             @updatedAt @map("updated_at") @db.Timestamptz(3)
+  member                 MemberProfile        @relation(fields: [memberId], references: [id], onDelete: Restrict)
+  plan                   MembershipPlan       @relation(fields: [planId], references: [id], onDelete: Restrict)
+  previousSubscription   Subscription?        @relation("Renewal", fields: [previousSubscriptionId], references: [id], onDelete: Restrict)
+  nextSubscription       Subscription?        @relation("Renewal")
+  creator                User?                @relation("SubscriptionCreator", fields: [createdBy], references: [id], onDelete: SetNull)
+  quotas                 SubscriptionQuota[]
+  freezes                SubscriptionFreeze[]
+  payments               PaymentRecord[]
+  quotaTransactions      QuotaTransaction[]
+  checkins               Checkin[]
+  classBookings          ClassBooking[]
+  ptBookings             PtBooking[]
+
+  @@unique([id, memberId])
+  @@index([memberId, status])
+  @@index([status, startDate])
+  @@index([status, endDate])
+  @@index([planId])
+  @@index([createdBy])
+  @@map("subscriptions")
+}
+
+model SubscriptionQuota {
+  id             String             @id @default(uuid()) @db.Uuid
+  subscriptionId String             @map("subscription_id") @db.Uuid
+  serviceTypeId  String             @map("service_type_id") @db.Uuid
+  // Purchased entitlement snapshot. null allocated means unlimited.
+  allocated      Int?
+  reserved       Int                @default(0)
+  used           Int                @default(0)
+  updatedAt      DateTime           @updatedAt @map("updated_at") @db.Timestamptz(3)
+  subscription   Subscription       @relation(fields: [subscriptionId], references: [id], onDelete: Restrict)
+  serviceType    ServiceType        @relation(fields: [serviceTypeId], references: [id], onDelete: Restrict)
+  transactions   QuotaTransaction[]
+  checkins       Checkin[]
+  classBookings  ClassBooking[]
+  ptBookings     PtBooking[]
+
+  @@unique([subscriptionId, serviceTypeId])
+  @@unique([id, subscriptionId])
+  @@index([serviceTypeId])
+  @@map("subscription_quotas")
+}
+
+model SubscriptionFreeze {
+  id             String       @id @default(uuid()) @db.Uuid
+  subscriptionId String       @map("subscription_id") @db.Uuid
+  startsAt       DateTime     @map("starts_at") @db.Timestamptz(3)
+  endsAt         DateTime     @map("ends_at") @db.Timestamptz(3)
+  freezeDays     Int          @map("freeze_days")
+  status         FreezeStatus @default(REQUESTED)
+  reason         String?
+  approvedBy     String?      @map("approved_by") @db.Uuid
+  // Set atomically with endDate extension to prevent double extension.
+  restoredAt     DateTime?    @map("restored_at") @db.Timestamptz(3)
+  createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
+  subscription   Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Restrict)
+  approver       User?        @relation("FreezeApprover", fields: [approvedBy], references: [id], onDelete: SetNull)
+
+  @@index([subscriptionId, status])
+  @@index([status, endsAt])
+  @@index([approvedBy])
+  @@map("subscription_freezes")
+}
+
+model PaymentRecord {
+  id             String        @id @default(uuid()) @db.Uuid
+  subscriptionId String        @map("subscription_id") @db.Uuid
+  amount         Decimal       @db.Decimal(14, 2)
+  currency       String        @default("VND") @db.VarChar(3)
+  status         PaymentStatus @default(PENDING)
+  method         String?
+  note           String?
+  confirmedBy    String?       @map("confirmed_by") @db.Uuid
+  confirmedAt    DateTime?     @map("confirmed_at") @db.Timestamptz(3)
+  createdAt      DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+  subscription   Subscription  @relation(fields: [subscriptionId], references: [id], onDelete: Restrict)
+  confirmer      User?         @relation("PaymentConfirmer", fields: [confirmedBy], references: [id], onDelete: SetNull)
+
+  @@index([subscriptionId, status])
+  @@index([confirmedBy])
+  @@map("payment_records")
+}
+
+model QuotaTransaction {
+  id             String               @id @default(uuid()) @db.Uuid
+  quotaId        String               @map("quota_id") @db.Uuid
+  subscriptionId String               @map("subscription_id") @db.Uuid
+  type           QuotaTransactionType
+  allocatedDelta Int                  @default(0) @map("allocated_delta")
+  reservedDelta  Int                  @default(0) @map("reserved_delta")
+  usedDelta      Int                  @default(0) @map("used_delta")
+  idempotencyKey String               @unique @map("idempotency_key")
+  // Reference to booking/checkin being changed; recorded in the same transaction.
+  referenceType  String?              @map("reference_type")
+  referenceId    String?              @map("reference_id") @db.Uuid
+  reason         String?
+  createdBy      String?              @map("created_by") @db.Uuid
+  createdAt      DateTime             @default(now()) @map("created_at") @db.Timestamptz(3)
+  quota          SubscriptionQuota    @relation(fields: [quotaId, subscriptionId], references: [id, subscriptionId], onDelete: Restrict)
+  subscription   Subscription         @relation(fields: [subscriptionId], references: [id], onDelete: Restrict)
+  actor          User?                @relation("QuotaActor", fields: [createdBy], references: [id], onDelete: SetNull)
+
+  @@index([quotaId, createdAt])
+  @@index([subscriptionId])
+  @@index([createdBy])
+  @@map("quota_transactions")
+}
+
+model Checkin {
+  id              String             @id @default(uuid()) @db.Uuid
+  memberId        String             @map("member_id") @db.Uuid
+  // Nullable so rejected attempts without a valid subscription can be recorded.
+  subscriptionId  String?            @map("subscription_id") @db.Uuid
+  quotaId         String?            @map("quota_id") @db.Uuid
+  status          CheckinStatus
+  rejectionReason String?            @map("rejection_reason")
+  checkedInAt     DateTime           @default(now()) @map("checked_in_at") @db.Timestamptz(3)
+  recordedBy      String?            @map("recorded_by") @db.Uuid
+  member          MemberProfile      @relation(fields: [memberId], references: [id], onDelete: Restrict)
+  subscription    Subscription?      @relation(fields: [subscriptionId, memberId], references: [id, memberId], onDelete: Restrict)
+  quota           SubscriptionQuota? @relation(fields: [quotaId, subscriptionId], references: [id, subscriptionId], onDelete: Restrict)
+  recorder        User?              @relation("CheckinRecorder", fields: [recordedBy], references: [id], onDelete: SetNull)
+
+  @@index([memberId, checkedInAt])
+  @@index([subscriptionId])
+  @@index([quotaId])
+  @@index([recordedBy])
+  @@map("checkins")
+}
+
+model GymClass {
+  id          String          @id @default(uuid()) @db.Uuid
+  name        String
+  description String?
+  isActive    Boolean         @default(true) @map("is_active")
+  schedules   ClassSchedule[]
+
+  @@map("classes")
+}
+
+model ClassSchedule {
+  id        String          @id @default(uuid()) @db.Uuid
+  classId   String          @map("class_id") @db.Uuid
+  trainerId String          @map("trainer_id") @db.Uuid
+  startsAt  DateTime        @map("starts_at") @db.Timestamptz(3)
+  endsAt    DateTime        @map("ends_at") @db.Timestamptz(3)
+  capacity  Int
+  status    ScheduleStatus  @default(SCHEDULED)
+  gymClass  GymClass        @relation(fields: [classId], references: [id], onDelete: Restrict)
+  trainer   EmployeeProfile @relation(fields: [trainerId], references: [id], onDelete: Restrict)
+  bookings  ClassBooking[]
+
+  @@index([classId, startsAt])
+  @@index([trainerId, startsAt])
+  @@map("class_schedules")
+}
+
+model ClassBooking {
+  id             String            @id @default(uuid()) @db.Uuid
+  scheduleId     String            @map("schedule_id") @db.Uuid
+  memberId       String            @map("member_id") @db.Uuid
+  subscriptionId String            @map("subscription_id") @db.Uuid
+  quotaId        String            @map("quota_id") @db.Uuid
+  status         BookingStatus     @default(BOOKED)
+  attendance     AttendanceStatus  @default(PENDING)
+  cancelledAt    DateTime?         @map("cancelled_at") @db.Timestamptz(3)
+  attendedAt     DateTime?         @map("attended_at") @db.Timestamptz(3)
+  createdAt      DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime          @updatedAt @map("updated_at") @db.Timestamptz(3)
+  schedule       ClassSchedule     @relation(fields: [scheduleId], references: [id], onDelete: Restrict)
+  member         MemberProfile     @relation(fields: [memberId], references: [id], onDelete: Restrict)
+  subscription   Subscription      @relation(fields: [subscriptionId, memberId], references: [id, memberId], onDelete: Restrict)
+  quota          SubscriptionQuota @relation(fields: [quotaId, subscriptionId], references: [id, subscriptionId], onDelete: Restrict)
+
+  // Rebooking updates this record; audit log retains transitions.
+  @@unique([scheduleId, memberId])
+  @@index([memberId, status])
+  @@index([subscriptionId])
+  @@index([quotaId])
+  @@map("class_bookings")
+}
+
+model PtAvailability {
+  id          String          @id @default(uuid()) @db.Uuid
+  trainerId   String          @map("trainer_id") @db.Uuid
+  startsAt    DateTime        @map("starts_at") @db.Timestamptz(3)
+  endsAt      DateTime        @map("ends_at") @db.Timestamptz(3)
+  isAvailable Boolean         @default(true) @map("is_available")
+  note        String?
+  trainer     EmployeeProfile @relation(fields: [trainerId], references: [id], onDelete: Restrict)
+  bookings    PtBooking[]
+
+  @@unique([id, trainerId])
+  @@index([trainerId, startsAt])
+  @@map("pt_availability")
+}
+
+model PtBooking {
+  id             String            @id @default(uuid()) @db.Uuid
+  memberId       String            @map("member_id") @db.Uuid
+  trainerId      String            @map("trainer_id") @db.Uuid
+  subscriptionId String            @map("subscription_id") @db.Uuid
+  quotaId        String            @map("quota_id") @db.Uuid
+  availabilityId String?           @map("availability_id") @db.Uuid
+  startsAt       DateTime          @map("starts_at") @db.Timestamptz(3)
+  endsAt         DateTime          @map("ends_at") @db.Timestamptz(3)
+  status         BookingStatus     @default(BOOKED)
+  attendance     AttendanceStatus  @default(PENDING)
+  cancelledAt    DateTime?         @map("cancelled_at") @db.Timestamptz(3)
+  attendedAt     DateTime?         @map("attended_at") @db.Timestamptz(3)
+  createdAt      DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime          @updatedAt @map("updated_at") @db.Timestamptz(3)
+  member         MemberProfile     @relation(fields: [memberId], references: [id], onDelete: Restrict)
+  trainer        EmployeeProfile   @relation(fields: [trainerId], references: [id], onDelete: Restrict)
+  subscription   Subscription      @relation(fields: [subscriptionId, memberId], references: [id, memberId], onDelete: Restrict)
+  quota          SubscriptionQuota @relation(fields: [quotaId, subscriptionId], references: [id, subscriptionId], onDelete: Restrict)
+  availability   PtAvailability?   @relation(fields: [availabilityId, trainerId], references: [id, trainerId], onDelete: Restrict)
+
+  @@index([trainerId, startsAt, endsAt])
+  @@index([memberId, startsAt])
+  @@index([subscriptionId, status])
+  @@index([quotaId])
+  @@index([availabilityId])
+  @@map("pt_bookings")
+}
+
+model Notification {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  title     String
+  body      String
+  data      Json?
+  readAt    DateTime? @map("read_at") @db.Timestamptz(3)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt, createdAt])
+  @@map("notifications")
+}
+
+model AuditLog {
+  id         String   @id @default(uuid()) @db.Uuid
+  actorId    String?  @map("actor_id") @db.Uuid
+  action     String
+  entityType String   @map("entity_type")
+  entityId   String?  @map("entity_id") @db.Uuid
+  // Never store password hashes, JWTs or secrets here.
+  metadata   Json?
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  actor      User?    @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([entityType, entityId, createdAt])
+  @@index([actorId, createdAt])
+  @@map("audit_logs")
+}

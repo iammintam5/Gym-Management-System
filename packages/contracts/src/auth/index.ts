@@ -33,3 +33,16 @@ export interface TokenPair {
   accessToken: string;
   refreshToken: string;
 }
+export interface AuthUserProfile {
+  id: string;
+  email: string;
+  isActive: boolean;
+  roles: UserRole[];
+  fullName?: string | null;
+  phone?: string | null;
+  createdAt: string | Date;
+}
+export interface LoginResponse {
+  tokens: TokenPair;
+  user: AuthUserProfile;
+}

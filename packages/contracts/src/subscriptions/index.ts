@@ -1,3 +1,5 @@
+import { PaymentStatus } from '../common';
+
 export enum SubscriptionStatus {
   PENDING = 'PENDING',
   ACTIVE = 'ACTIVE',
@@ -17,6 +19,40 @@ export function effectiveSubscriptionStatus(
     ? SubscriptionStatus.EXPIRED
     : status;
 }
+
+export interface SubscriptionMemberSummary {
+  id: string;
+  memberCode: string;
+  fullName: string;
+  email?: string;
+  phone?: string | null;
+}
+
+export interface SubscriptionPlanSummary {
+  id: string;
+  name: string;
+  durationDays: number;
+  price: number;
+}
+
+export interface SubscriptionQuotaSummary {
+  id: string;
+  service: string;
+  serviceName: string;
+  allocated: number | null;
+  reserved: number;
+  used: number;
+}
+
+export interface SubscriptionPaymentSummary {
+  id: string;
+  amount: number;
+  currency: string;
+  status: PaymentStatus;
+  method?: string | null;
+  confirmedAt?: string | null;
+}
+
 export interface SubscriptionSummary {
   id: string;
   memberId: string;
@@ -24,4 +60,57 @@ export interface SubscriptionSummary {
   startDate: string;
   endDate: string;
   status: SubscriptionStatus;
+}
+
+export interface SubscriptionDetail {
+  id: string;
+  memberId: string;
+  planId: string;
+  previousSubscriptionId: string | null;
+  startDate: string;
+  endDate: string;
+  storedStatus: SubscriptionStatus;
+  effectiveStatus: SubscriptionStatus;
+  paymentStatus: PaymentStatus;
+  agreedPrice: number;
+  activatedAt: string | null;
+  cancelledAt: string | null;
+  cancelReason: string | null;
+  createdBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+  member: SubscriptionMemberSummary;
+  plan: SubscriptionPlanSummary;
+  quotas: SubscriptionQuotaSummary[];
+  payments?: SubscriptionPaymentSummary[];
+}
+
+export interface PaginatedSubscriptionsResponse {
+  data: SubscriptionDetail[];
+  meta: {
+    page: number;
+    limit: number;
+    total: number;
+    totalPages: number;
+  };
+}
+
+export interface CreateSubscriptionRequest {
+  memberId: string;
+  planId: string;
+  startDate?: string;
+  paymentMethod?: string;
+  paymentStatus?: PaymentStatus;
+  note?: string;
+}
+
+export interface CancelSubscriptionRequest {
+  reason: string;
+}
+
+export interface RenewSubscriptionRequest {
+  planId?: string;
+  paymentMethod?: string;
+  paymentStatus?: PaymentStatus;
+  note?: string;
 }

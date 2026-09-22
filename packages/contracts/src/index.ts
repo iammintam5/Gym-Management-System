@@ -1,6 +1,7 @@
 export * from './auth';
 export * from './users';
 export * from './members';
+export * from './employees';
 export * from './membership-plans';
 export * from './subscriptions';
 export * from './checkins';

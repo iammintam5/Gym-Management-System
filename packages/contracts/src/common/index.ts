@@ -11,6 +11,13 @@ export enum ServiceTypeCode {
   PT = 'PT',
 }
 
+export enum QuotaTransactionType {
+  RESERVE = 'RESERVE',
+  USE = 'USE',
+  REFUND = 'REFUND',
+  ADJUST = 'ADJUST',
+}
+
 export interface HealthResponse {
   status: 'ok';
 }
@@ -19,14 +26,67 @@ export interface ApiErrorBody {
   message: string | string[];
   error?: string;
 }
+
 /** allocated=null means unlimited; never use a magic negative number. */
 export interface QuotaSummary {
   allocated: number | null;
   reserved: number;
   used: number;
 }
+
 export function remainingQuota(quota: QuotaSummary): number | null {
   return quota.allocated === null
     ? null
     : quota.allocated - quota.reserved - quota.used;
+}
+
+export interface SubscriptionQuotaDetail {
+  id: string;
+  subscriptionId: string;
+  service: string;
+  serviceName: string;
+  unlimited: boolean;
+  allocated: number | null;
+  reserved: number;
+  used: number;
+  remaining: number | null;
+  updatedAt: string;
+}
+
+export interface QuotaTransactionDetail {
+  id: string;
+  quotaId: string;
+  subscriptionId: string;
+  type: QuotaTransactionType;
+  allocatedDelta: number;
+  reservedDelta: number;
+  usedDelta: number;
+  idempotencyKey: string;
+  referenceType?: string | null;
+  referenceId?: string | null;
+  reason?: string | null;
+  createdBy?: string | null;
+  createdAt: string;
+}
+
+export interface PaginatedQuotaTransactionsResponse {
+  data: QuotaTransactionDetail[];
+  meta: {
+    page: number;
+    limit: number;
+    total: number;
+    totalPages: number;
+  };
+}
+
+export interface CanUseQuotaResult {
+  allowed: boolean;
+  reason?: string;
+  remaining: number | null;
+  unlimited: boolean;
+}
+
+export interface AdjustQuotaRequest {
+  allocatedDelta?: number;
+  reason: string;
 }

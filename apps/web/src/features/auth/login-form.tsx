@@ -4,7 +4,7 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { Button } from '@gym/ui';
-import type { LoginRequest } from '@gym/contracts';
+import type { LoginRequest, LoginResponse } from '@gym/contracts';
 import { ApiError, apiClient } from '@/services/api-client';
 const schema = z.object({
   email: z.email('Email không hợp lệ').max(254),
@@ -20,20 +20,18 @@ export function LoginForm() {
   async function submit(values: LoginRequest) {
     setMessage('');
     try {
-      await apiClient<unknown>('auth/login', {
+      const data = await apiClient<LoginResponse>('auth/login', {
         method: 'POST',
         body: JSON.stringify(values),
       });
       setMessage(
-        'Backend đã phản hồi. Luồng phiên đăng nhập chưa được triển khai.',
+        `Đăng nhập thành công! Xin chào ${data.user.fullName || data.user.email} [Vai trò: ${data.user.roles.join(', ')}]`,
       );
     } catch (error) {
       setMessage(
-        error instanceof ApiError && error.status === 501
-          ? 'Chức năng đăng nhập đang được phát triển.'
-          : error instanceof ApiError
-            ? error.message
-            : 'Không thể kết nối tới máy chủ.',
+        error instanceof ApiError
+          ? error.message
+          : 'Không thể kết nối tới máy chủ.',
       );
     }
   }

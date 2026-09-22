@@ -17,7 +17,7 @@ enum UserRole {
 
 // EXPIRED is derived in contracts from ACTIVE + endDate; no cron write required.
 enum SubscriptionStatus {
-  PENDING
+  UPCOMING
   ACTIVE
   SUSPENDED
   CANCELLED
@@ -192,7 +192,7 @@ model Subscription {
   previousSubscriptionId String?              @unique @map("previous_subscription_id") @db.Uuid
   startDate              DateTime             @map("start_date") @db.Timestamptz(3)
   endDate                DateTime             @map("end_date") @db.Timestamptz(3)
-  status                 SubscriptionStatus   @default(PENDING)
+  status                 SubscriptionStatus   @default(UPCOMING)
   paymentStatus          PaymentStatus        @default(PENDING) @map("payment_status")
   // Snapshot price; future plan edits must not rewrite purchased terms.
   agreedPrice            Decimal              @map("agreed_price") @db.Decimal(14, 2)

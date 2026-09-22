@@ -1,7 +1,7 @@
 import { PaymentStatus } from '../common';
 
 export enum SubscriptionStatus {
-  PENDING = 'PENDING',
+  UPCOMING = 'UPCOMING',
   ACTIVE = 'ACTIVE',
   SUSPENDED = 'SUSPENDED',
   CANCELLED = 'CANCELLED',

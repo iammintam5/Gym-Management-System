@@ -184,7 +184,7 @@ test('Phase 8 - Subscription Renewal Integration Tests', async (t) => {
   });
 
   // 2. Renew Active Subscription (Same Plan, Omit planId)
-  await t.test('POST /api/subscriptions/:id/renew - Active subscription renewal (Same Plan, Queued PENDING)', async () => {
+  await t.test('POST /api/subscriptions/:id/renew - Active subscription renewal (Same Plan, Queued UPCOMING)', async () => {
     const res = await request(`subscriptions/${activeSubId}/renew`, {
       method: 'POST',
       token: staffToken,
@@ -203,8 +203,8 @@ test('Phase 8 - Subscription Renewal Integration Tests', async (t) => {
     assert.equal(data.previousSubscriptionId, activeSubId);
     assert.equal(data.memberId, testMemberId);
     assert.equal(data.planId, basicPlan.id);
-    assert.equal(data.storedStatus, 'PENDING');
-    assert.equal(data.effectiveStatus, 'PENDING');
+    assert.equal(data.storedStatus, 'UPCOMING');
+    assert.equal(data.effectiveStatus, 'UPCOMING');
     assert.equal(data.agreedPrice, 500000);
     assert.equal(data.activatedAt, null);
 
@@ -236,8 +236,8 @@ test('Phase 8 - Subscription Renewal Integration Tests', async (t) => {
     assert.equal(oldSub.agreedPrice, 500000);
   });
 
-  // 3. Reject duplicate renewal when PENDING renewal already exists
-  await t.test('POST /api/subscriptions/:id/renew - Reject if PENDING renewal already exists', async () => {
+  // 3. Reject duplicate renewal when UPCOMING renewal already exists
+  await t.test('POST /api/subscriptions/:id/renew - Reject if UPCOMING renewal already exists', async () => {
     const res = await request(`subscriptions/${activeSubId}/renew`, {
       method: 'POST',
       token: adminToken,
@@ -246,7 +246,7 @@ test('Phase 8 - Subscription Renewal Integration Tests', async (t) => {
     assert.equal(res.status, 409);
     const err = await res.json();
     assert.ok(
-      err.message.includes('pending subscription renewal queued') ||
+      err.message.includes('upcoming subscription renewal queued') ||
         err.message.includes('chain') ||
         err.message.includes('superseded'),
     );
@@ -263,8 +263,8 @@ test('Phase 8 - Subscription Renewal Integration Tests', async (t) => {
     assert.equal(res.status, 409);
   });
 
-  // 5. Reject renewing a PENDING subscription directly
-  await t.test('POST /api/subscriptions/:id/renew - Reject renewing PENDING source', async () => {
+  // 5. Reject renewing an UPCOMING subscription directly
+  await t.test('POST /api/subscriptions/:id/renew - Reject renewing UPCOMING source', async () => {
     const res = await request(`subscriptions/${renewedSubId}/renew`, {
       method: 'POST',
       token: staffToken,
@@ -272,7 +272,7 @@ test('Phase 8 - Subscription Renewal Integration Tests', async (t) => {
     });
     assert.equal(res.status, 409);
     const err = await res.json();
-    assert.ok(err.message.includes('Cannot renew a pending subscription'));
+    assert.ok(err.message.includes('Cannot renew an upcoming subscription'));
   });
 
   // 6. Renew with different plan (Upgrade from Basic to Premium)
@@ -317,7 +317,7 @@ test('Phase 8 - Subscription Renewal Integration Tests', async (t) => {
     assert.equal(premiumSub.planId, premiumPlan.id);
     assert.equal(premiumSub.agreedPrice, 1200000);
     assert.equal(premiumSub.previousSubscriptionId, initialBasicSub.id);
-    assert.equal(premiumSub.storedStatus, 'PENDING');
+    assert.equal(premiumSub.storedStatus, 'UPCOMING');
 
     // Verify Premium quotas (3 entitlements) with fresh reset
     assert.equal(premiumSub.quotas.length, 3);
@@ -492,5 +492,31 @@ test('Phase 8 - Subscription Renewal Integration Tests', async (t) => {
     // Exactly one should succeed (201) and the other should be rejected with 409 Conflict
     assert.ok(statuses.includes(201), 'One request must succeed with 201');
     assert.ok(statuses.includes(409), 'The concurrent duplicate request must fail with 409');
+  });
+
+  // 9. Allow renewal if previous queued renewal was CANCELLED (Fix Renewal Chain Lock)
+  await t.test('POST /api/subscriptions/:id/renew - Allow renewal if previous renewal was CANCELLED', async () => {
+    // Cancel the renewed subscription (renewedSubId)
+    const cancelRes = await request(`subscriptions/${renewedSubId}/cancel`, {
+      method: 'POST',
+      token: staffToken,
+      body: JSON.stringify({ reason: 'Member decided to cancel queued renewal' }),
+    });
+    assert.equal(cancelRes.status, 200);
+
+    // Now renew from activeSubId again -> must succeed (201)
+    const reRenewRes = await request(`subscriptions/${activeSubId}/renew`, {
+      method: 'POST',
+      token: staffToken,
+      body: JSON.stringify({
+        paymentMethod: 'CASH',
+        note: 'Re-renewed after previous renewal cancellation',
+      }),
+    });
+    assert.equal(reRenewRes.status, 201);
+    const reRenewedData = await reRenewRes.json();
+    assert.ok(reRenewedData.id);
+    assert.equal(reRenewedData.previousSubscriptionId, activeSubId);
+    assert.equal(reRenewedData.storedStatus, 'UPCOMING');
   });
 });

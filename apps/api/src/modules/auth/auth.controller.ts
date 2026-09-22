@@ -3,49 +3,95 @@ import {
   Controller,
   Get,
   HttpCode,
-  NotImplementedException,
+  HttpStatus,
   Post,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiResponse, ApiTags } from '@nestjs/swagger';
-import type { AuthUser } from '@gym/contracts';
+import {
+  ApiBearerAuth,
+  ApiOperation,
+  ApiResponse,
+  ApiTags,
+} from '@nestjs/swagger';
+import type {
+  AuthUser,
+  AuthUserProfile,
+  LoginResponse,
+  TokenPair,
+} from '@gym/contracts';
 import { Public } from '../../common/decorators/public.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { AuthService } from './auth.service';
 import { LoginDto, RefreshTokenDto } from './dto/login.dto';
+
 @ApiTags('auth')
 @Controller('auth')
 export class AuthController {
+  constructor(private readonly authService: AuthService) {}
+
   @Public()
   @Post('login')
-  @HttpCode(200)
-  @ApiResponse({
-    status: 501,
-    description: 'Credential verification is not implemented.',
-  })
-  login(@Body() _body: LoginDto): never {
-    throw new NotImplementedException(
-      'Login is not implemented in this foundation.',
-    );
-  }
-  @Public()
-  @Post('refresh')
-  @HttpCode(200)
-  @ApiResponse({
-    status: 501,
-    description: 'Refresh rotation and persistence are not implemented.',
-  })
-  refresh(@Body() _body: RefreshTokenDto): never {
-    throw new NotImplementedException(
-      'Refresh token rotation is not implemented.',
-    );
-  }
-  @Get('me')
-  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Log in with email and password' })
   @ApiResponse({
     status: 200,
-    description:
-      'Verified access-token identity (no database profile lookup yet).',
+    description: 'Login successful, returns token pair and user profile',
   })
-  me(@CurrentUser() user: AuthUser): AuthUser {
-    return user;
+  @ApiResponse({
+    status: 401,
+    description: 'Invalid credentials or inactive account',
+  })
+  async login(@Body() body: LoginDto): Promise<LoginResponse> {
+    return this.authService.login(body);
+  }
+
+  @Public()
+  @Post('refresh')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Refresh access token using refresh token' })
+  @ApiResponse({
+    status: 200,
+    description: 'Token refreshed successfully, returns new token pair',
+  })
+  @ApiResponse({
+    status: 401,
+    description: 'Invalid, revoked or expired refresh token',
+  })
+  async refresh(@Body() body: RefreshTokenDto): Promise<TokenPair> {
+    return this.authService.refresh(body);
+  }
+
+  @Post('logout')
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Log out and invalidate current refresh token' })
+  @ApiResponse({
+    status: 200,
+    description: 'Logged out successfully',
+  })
+  @ApiResponse({
+    status: 401,
+    description: 'Unauthorized',
+  })
+  async logout(
+    @CurrentUser() user: AuthUser,
+  ): Promise<{ success: boolean; message: string }> {
+    return this.authService.logout(user.id);
+  }
+
+  @Get('me')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Get current authenticated user profile from database',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Current user profile loaded from database',
+  })
+  @ApiResponse({
+    status: 401,
+    description: 'Unauthorized or inactive user',
+  })
+  async me(@CurrentUser() user: AuthUser): Promise<AuthUserProfile> {
+    return this.authService.getCurrentUserProfile(user.id);
   }
 }

@@ -461,7 +461,7 @@ test('Phase 7 - Subscription Core Integration Tests', async (t) => {
     assert.equal(jitSub.status, 'UPCOMING');
 
     // Query current subscription via API
-    const currentRes = await request(`subscriptions/members/${jitMember.id}/current`, {
+    const currentRes = await request(`members/${jitMember.id}/subscriptions/current`, {
       token: adminToken,
     });
     assert.equal(currentRes.status, 200);
@@ -485,6 +485,7 @@ test('Phase 7 - Subscription Core Integration Tests', async (t) => {
       method: 'POST',
       token: staffToken,
       body: JSON.stringify({
+        email: `early.sub.${Date.now()}@test.com`,
         fullName: 'Early Activation Member',
         phone: `093${Date.now().toString().slice(-7)}`,
       }),

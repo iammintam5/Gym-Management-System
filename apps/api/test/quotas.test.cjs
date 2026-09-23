@@ -445,7 +445,7 @@ test('Phase 9 - Quota Engine Integration Tests', async (t) => {
         planId: testPlan.id,
         startDate: futureStart,
         endDate: futureEnd,
-        status: 'PENDING',
+        status: 'UPCOMING',
         agreedPrice: 800000,
       },
     });

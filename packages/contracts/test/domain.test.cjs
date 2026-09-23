@@ -12,7 +12,7 @@ test('expiry is derived only for active subscriptions and only after endDate', (
     effectiveSubscriptionStatus(S.ACTIVE, end, new Date(end.getTime() + 1)),
     S.EXPIRED,
   );
-  for (const state of [S.PENDING, S.SUSPENDED, S.CANCELLED]) {
+  for (const state of [S.UPCOMING, S.SUSPENDED, S.CANCELLED]) {
     assert.equal(
       effectiveSubscriptionStatus(state, end, new Date('2027-01-01')),
       state,

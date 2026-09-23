@@ -5,6 +5,7 @@ require('reflect-metadata');
 const { NestFactory } = require('@nestjs/core');
 const { AppModule } = require('../dist/app.module');
 const { setupApp } = require('../dist/config/setup-app');
+const { DatabaseService } = require('../dist/modules/database/database.module');
 
 test('Phase 7 - Subscription Core Integration Tests', async (t) => {
   const app = await NestFactory.create(AppModule, {
@@ -15,6 +16,7 @@ test('Phase 7 - Subscription Core Integration Tests', async (t) => {
   await app.listen(0, '127.0.0.1');
   t.after(() => app.close());
 
+  const db = app.get(DatabaseService);
   const base = await app.getUrl();
 
   const request = (path, options = {}) =>
@@ -261,8 +263,8 @@ test('Phase 7 - Subscription Core Integration Tests', async (t) => {
     firstSubId = data.id;
   });
 
-  // 4. Create Second Subscription for Same Member (Queued as PENDING)
-  await t.test('POST /api/subscriptions - Second subscription queued as PENDING after first', async () => {
+  // 4. Create Second Subscription for Same Member (Queued as UPCOMING)
+  await t.test('POST /api/subscriptions - Second subscription queued as UPCOMING after first', async () => {
     const payload = {
       memberId: queueTestMemberId,
       planId: testPlanId,
@@ -278,8 +280,8 @@ test('Phase 7 - Subscription Core Integration Tests', async (t) => {
     assert.equal(res.status, 201);
     const data = await res.json();
     assert.ok(data.id);
-    assert.equal(data.storedStatus, 'PENDING');
-    assert.equal(data.effectiveStatus, 'PENDING');
+    assert.equal(data.storedStatus, 'UPCOMING');
+    assert.equal(data.effectiveStatus, 'UPCOMING');
     assert.equal(data.previousSubscriptionId, firstSubId);
 
     // Fetch first subscription to verify its endDate matches second subscription's startDate
@@ -324,13 +326,13 @@ test('Phase 7 - Subscription Core Integration Tests', async (t) => {
     const dataMemberSubs = await resFilterMember.json();
     assert.equal(dataMemberSubs.data.length, 2);
 
-    // Filter by status PENDING
-    const resFilterPending = await request('subscriptions?status=PENDING', {
+    // Filter by status UPCOMING
+    const resFilterUpcoming = await request('subscriptions?status=UPCOMING', {
       token: adminToken,
     });
-    assert.equal(resFilterPending.status, 200);
-    const dataPending = await resFilterPending.json();
-    assert.ok(dataPending.data.some((s) => s.id === secondSubId));
+    assert.equal(resFilterUpcoming.status, 200);
+    const dataUpcoming = await resFilterUpcoming.json();
+    assert.ok(dataUpcoming.data.some((s) => s.id === secondSubId));
   });
 
   // 6. Get Subscription Details by ID
@@ -403,7 +405,7 @@ test('Phase 7 - Subscription Core Integration Tests', async (t) => {
     });
     assert.equal(noReasonRes.status, 400);
 
-    // Staff cancels the queued PENDING subscription
+    // Staff cancels the queued UPCOMING subscription
     const cancelRes = await request(`subscriptions/${secondSubId}/cancel`, {
       method: 'POST',
       token: staffToken,
@@ -424,4 +426,113 @@ test('Phase 7 - Subscription Core Integration Tests', async (t) => {
     });
     assert.equal(alreadyCancelledRes.status, 409);
   });
+
+  // 10. JIT Promotion: UPCOMING subscription automatically promotes to ACTIVE when startDate is reached
+  await t.test('JIT Promotion - UPCOMING subscription auto-promotes to ACTIVE on current query', async () => {
+    // Directly update an upcoming subscription in DB to have startDate in the past
+    const pastDate = new Date(Date.now() - 3600000); // 1 hour ago
+    const futureEndDate = new Date(Date.now() + 86400000 * 30);
+    
+    // Create new test member
+    const jitMemberRes = await request('members', {
+      method: 'POST',
+      token: adminToken,
+      body: JSON.stringify({
+        email: `jit.test.${Date.now()}@test.com`,
+        fullName: 'JIT Test Member',
+        phone: `092${Date.now().toString().slice(-7)}`,
+      }),
+    });
+    const jitMember = await jitMemberRes.json();
+
+    // Create UPCOMING subscription directly in DB with past startDate
+    const jitSub = await db.client.subscription.create({
+      data: {
+        memberId: jitMember.id,
+        planId: testPlanId,
+        startDate: pastDate,
+        endDate: futureEndDate,
+        status: 'UPCOMING',
+        paymentStatus: 'PAID',
+        agreedPrice: 500000,
+        activatedAt: null,
+      },
+    });
+    assert.equal(jitSub.status, 'UPCOMING');
+
+    // Query current subscription via API
+    const currentRes = await request(`members/${jitMember.id}/subscriptions/current`, {
+      token: adminToken,
+    });
+    assert.equal(currentRes.status, 200);
+    const currentData = await currentRes.json();
+    assert.equal(currentData.id, jitSub.id);
+    assert.equal(currentData.storedStatus, 'ACTIVE');
+    assert.equal(currentData.effectiveStatus, 'ACTIVE');
+    assert.ok(currentData.activatedAt);
+
+    // Verify database record has been updated
+    const updatedDbSub = await db.client.subscription.findUnique({
+      where: { id: jitSub.id },
+    });
+    assert.equal(updatedDbSub.status, 'ACTIVE');
+    assert.ok(updatedDbSub.activatedAt);
+  });
+
+  await t.test('Early Activation: activateNow transforms UPCOMING subscription to ACTIVE immediately', async () => {
+    // 1. Create a fresh member
+    const earlyMemberRes = await request('members', {
+      method: 'POST',
+      token: staffToken,
+      body: JSON.stringify({
+        email: `early.sub.${Date.now()}@test.com`,
+        fullName: 'Early Activation Member',
+        phone: `093${Date.now().toString().slice(-7)}`,
+      }),
+    });
+    const earlyMember = await earlyMemberRes.json();
+
+    // 2. Create subscription with future startDate (e.g. 15 days in future)
+    const futureStartDate = new Date(Date.now() + 15 * 86400000).toISOString().split('T')[0];
+    const subRes = await request('subscriptions', {
+      method: 'POST',
+      token: staffToken,
+      body: JSON.stringify({
+        memberId: earlyMember.id,
+        planId: testPlanId,
+        startDate: futureStartDate,
+        paymentStatus: 'PAID',
+      }),
+    });
+    assert.equal(subRes.status, 201);
+    const sub = await subRes.json();
+    assert.equal(sub.storedStatus, 'UPCOMING');
+    assert.equal(sub.effectiveStatus, 'UPCOMING');
+    assert.equal(sub.activatedAt, null);
+
+    // 3. Call activateNow
+    const activateRes = await request(`subscriptions/${sub.id}/activate-now`, {
+      method: 'POST',
+      token: staffToken,
+    });
+    assert.equal(activateRes.status, 200);
+    const activatedSub = await activateRes.json();
+    assert.equal(activatedSub.id, sub.id);
+    assert.equal(activatedSub.storedStatus, 'ACTIVE');
+    assert.equal(activatedSub.effectiveStatus, 'ACTIVE');
+    assert.ok(activatedSub.activatedAt);
+
+    // Verify startDate was shifted to today
+    const activatedStartDate = new Date(activatedSub.startDate);
+    const now = new Date();
+    assert.ok(Math.abs(activatedStartDate.getTime() - now.getTime()) < 60000);
+
+    // 4. Calling activateNow again returns 409 Conflict
+    const reActivateRes = await request(`subscriptions/${sub.id}/activate-now`, {
+      method: 'POST',
+      token: staffToken,
+    });
+    assert.equal(reActivateRes.status, 409);
+  });
 });
+

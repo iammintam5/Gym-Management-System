@@ -31,11 +31,11 @@ export function resolveEffectiveStatus(
     return SubscriptionStatus.ACTIVE;
   }
 
-  if (stored === SubscriptionStatus.PENDING) {
+  if (stored === SubscriptionStatus.UPCOMING) {
     if (current > end) {
       return SubscriptionStatus.EXPIRED;
     }
-    return SubscriptionStatus.PENDING;
+    return SubscriptionStatus.UPCOMING;
   }
 
   return stored;

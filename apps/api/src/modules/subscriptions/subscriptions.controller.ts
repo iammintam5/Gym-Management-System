@@ -117,6 +117,29 @@ export class SubscriptionsController {
     return this.subscriptionsService.findById(id);
   }
 
+  @Post(':id/activate-now')
+  @HttpCode(HttpStatus.OK)
+  @Roles(UserRole.ADMIN, UserRole.STAFF)
+  @ApiOperation({
+    summary: 'Activate an upcoming subscription immediately today (Admin & Staff)',
+    description:
+      'Activates an UPCOMING subscription before its original scheduled startDate. Sets startDate to now, recalculates endDate based on plan duration, marks status as ACTIVE, and sets activatedAt.',
+  })
+  @ApiOkResponse({ description: 'Subscription activated successfully' })
+  @ApiNotFoundResponse({ description: 'Subscription not found' })
+  @ApiConflictResponse({
+    description:
+      'Subscription is not UPCOMING, not PAID, or member already has an active subscription',
+  })
+  @ApiForbiddenResponse({ description: 'Forbidden (Admin & Staff only)' })
+  @ApiUnauthorizedResponse({ description: 'Unauthorized' })
+  async activateNow(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() currentUser: AuthUser,
+  ): Promise<SubscriptionDetail> {
+    return this.subscriptionsService.activateNow(id, currentUser.id);
+  }
+
   @Post(':id/cancel')
   @HttpCode(HttpStatus.OK)
   @Roles(UserRole.ADMIN, UserRole.STAFF)

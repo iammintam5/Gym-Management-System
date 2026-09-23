@@ -6,7 +6,9 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import {
+  BookingStatus,
   PaymentStatus,
+  QuotaTransactionType,
   SubscriptionStatus,
   type PaginatedSubscriptionsResponse,
   type SubscriptionDetail,
@@ -212,17 +214,17 @@ export class SubscriptionsService {
 
     // 3. Concurrency-safe atomic transaction
     const createdSub = await this.db.client.$transaction(async (tx) => {
-      // Find all active or pending non-cancelled subscriptions for this member
-      const activeOrPendingSubs = await tx.subscription.findMany({
+      // Find all active or upcoming non-cancelled subscriptions for this member
+      const activeOrUpcomingSubs = await tx.subscription.findMany({
         where: {
           memberId: dto.memberId,
-          status: { in: [SubscriptionStatus.ACTIVE, SubscriptionStatus.PENDING] },
+          status: { in: [SubscriptionStatus.ACTIVE, SubscriptionStatus.UPCOMING] },
         },
         orderBy: { endDate: 'desc' },
       });
 
       // Filter out any active records whose end date has already passed
-      const currentChainedSubs = activeOrPendingSubs.filter(
+      const currentChainedSubs = activeOrUpcomingSubs.filter(
         (s) => resolveEffectiveStatus(s, now) !== SubscriptionStatus.EXPIRED,
       );
 
@@ -241,15 +243,15 @@ export class SubscriptionsService {
           initialStatus = SubscriptionStatus.ACTIVE;
           activatedAt = now;
         } else {
-          initialStatus = SubscriptionStatus.PENDING;
+          initialStatus = SubscriptionStatus.UPCOMING;
           activatedAt = null;
         }
       } else {
-        // Case B: Member already has an active/queued subscription -> Queue as PENDING
+        // Case B: Member already has an active/queued subscription -> Queue as UPCOMING
         const latestSub = currentChainedSubs[0]!;
         startDate = new Date(latestSub.endDate);
         endDate = calculateEndDate(startDate, plan.durationDays);
-        initialStatus = SubscriptionStatus.PENDING;
+        initialStatus = SubscriptionStatus.UPCOMING;
         activatedAt = null;
         previousSubscriptionId = latestSub.id;
       }
@@ -484,7 +486,7 @@ export class SubscriptionsService {
     }
 
     const now = new Date();
-    const currentSub = await this.db.client.subscription.findFirst({
+    let currentSub = await this.db.client.subscription.findFirst({
       where: {
         memberId,
         status: SubscriptionStatus.ACTIVE,
@@ -499,6 +501,40 @@ export class SubscriptionsService {
         payments: true,
       },
     });
+
+    if (!currentSub) {
+      // JIT Promotion: Find eligible UPCOMING subscription that has reached its startDate and is PAID
+      const eligibleUpcoming = await this.db.client.subscription.findFirst({
+        where: {
+          memberId,
+          status: SubscriptionStatus.UPCOMING,
+          paymentStatus: PaymentStatus.PAID,
+          startDate: { lte: now },
+          endDate: { gte: now },
+        },
+        orderBy: { startDate: 'asc' },
+      });
+
+      if (eligibleUpcoming) {
+        currentSub = await this.db.client.subscription.update({
+          where: { id: eligibleUpcoming.id },
+          data: {
+            status: SubscriptionStatus.ACTIVE,
+            activatedAt: now,
+          },
+          include: {
+            member: { include: { user: true } },
+            plan: true,
+            quotas: { include: { serviceType: true } },
+            payments: true,
+          },
+        });
+
+        this.logger.log(
+          `JIT Activation: Promoted UPCOMING subscription ${currentSub.id} to ACTIVE for member ${memberId}`,
+        );
+      }
+    }
 
     if (!currentSub) {
       throw new NotFoundException(
@@ -536,6 +572,127 @@ export class SubscriptionsService {
     }
 
     return this.findCurrentForMember(profile.id);
+  }
+
+  async activateNow(
+    id: string,
+    actorId?: string,
+  ): Promise<SubscriptionDetail> {
+    const sub = await this.db.client.subscription.findUnique({
+      where: { id },
+      include: {
+        member: { include: { user: true } },
+        plan: true,
+        quotas: { include: { serviceType: true } },
+        payments: true,
+      },
+    });
+
+    if (!sub) {
+      throw new NotFoundException(`Subscription with ID "${id}" not found`);
+    }
+
+    if (sub.status !== SubscriptionStatus.UPCOMING) {
+      if (sub.status === SubscriptionStatus.ACTIVE) {
+        throw new ConflictException('Subscription is already active');
+      }
+      if (sub.status === SubscriptionStatus.CANCELLED) {
+        throw new ConflictException('Cannot activate a cancelled subscription');
+      }
+      if (sub.status === SubscriptionStatus.SUSPENDED) {
+        throw new ConflictException('Cannot activate a suspended subscription');
+      }
+      throw new ConflictException(
+        `Cannot activate subscription in status "${sub.status}"`,
+      );
+    }
+
+    if (sub.paymentStatus !== PaymentStatus.PAID) {
+      throw new ConflictException(
+        'Cannot activate subscription before payment is completed (paymentStatus must be PAID)',
+      );
+    }
+
+    const now = new Date();
+
+    const updated = await this.db.client.$transaction(async (tx) => {
+      // Check if member already has an active subscription covering now
+      const currentActive = await tx.subscription.findFirst({
+        where: {
+          memberId: sub.memberId,
+          id: { not: id },
+          status: SubscriptionStatus.ACTIVE,
+          startDate: { lte: now },
+          endDate: { gte: now },
+        },
+      });
+
+      if (currentActive) {
+        throw new ConflictException(
+          `Member already has an active subscription (${currentActive.id}) ending on ${currentActive.endDate.toISOString().split('T')[0]}. Cannot activate another subscription simultaneously.`,
+        );
+      }
+
+      const newStartDate = now;
+      const newEndDate = calculateEndDate(newStartDate, sub.plan.durationDays);
+
+      const activatedSub = await tx.subscription.update({
+        where: { id },
+        data: {
+          startDate: newStartDate,
+          endDate: newEndDate,
+          status: SubscriptionStatus.ACTIVE,
+          activatedAt: now,
+        },
+        include: {
+          member: { include: { user: true } },
+          plan: true,
+          quotas: { include: { serviceType: true } },
+          payments: true,
+        },
+      });
+
+      // Shift forward any queued renewal subscriptions directly chained to this subscription
+      let currentParentEndDate = newEndDate;
+      let chainedChild = await tx.subscription.findFirst({
+        where: {
+          previousSubscriptionId: id,
+          status: SubscriptionStatus.UPCOMING,
+        },
+        include: { plan: true },
+      });
+
+      while (chainedChild) {
+        const childStart = new Date(currentParentEndDate);
+        const childEnd = calculateEndDate(
+          childStart,
+          chainedChild.plan.durationDays,
+        );
+        await tx.subscription.update({
+          where: { id: chainedChild.id },
+          data: { startDate: childStart, endDate: childEnd },
+        });
+        currentParentEndDate = childEnd;
+        chainedChild = await tx.subscription.findFirst({
+          where: {
+            previousSubscriptionId: chainedChild.id,
+            status: SubscriptionStatus.UPCOMING,
+          },
+          include: { plan: true },
+        });
+      }
+
+      return activatedSub;
+    });
+
+    this.logger.log(
+      `Early Activation: Activated subscription ${id} immediately for member ${sub.memberId} by actor ${actorId ?? 'system'}`,
+    );
+
+    return this.mapSubscriptionDetail(
+      updated as unknown as RawSubscriptionWithRelations,
+      now,
+    );
   }
 
   async cancel(
@@ -576,19 +733,102 @@ export class SubscriptionsService {
       );
     }
 
-    const updated = await this.db.client.subscription.update({
-      where: { id },
-      data: {
-        status: SubscriptionStatus.CANCELLED,
-        cancelledAt: now,
-        cancelReason: dto.reason,
-      },
-      include: {
-        member: { include: { user: true } },
-        plan: true,
-        quotas: { include: { serviceType: true } },
-        payments: true,
-      },
+    const updated = await this.db.client.$transaction(async (tx) => {
+      // 1. Cancel future Class Bookings and refund quota reserved
+      const futureClassBookings = await tx.classBooking.findMany({
+        where: {
+          subscriptionId: id,
+          status: BookingStatus.BOOKED,
+          schedule: {
+            startsAt: { gte: now },
+          },
+        },
+      });
+
+      for (const booking of futureClassBookings) {
+        await tx.classBooking.update({
+          where: { id: booking.id },
+          data: {
+            status: BookingStatus.CANCELLED,
+            cancelledAt: now,
+          },
+        });
+
+        await tx.subscriptionQuota.update({
+          where: { id: booking.quotaId },
+          data: {
+            reserved: { decrement: 1 },
+          },
+        });
+
+        await tx.quotaTransaction.create({
+          data: {
+            quotaId: booking.quotaId,
+            subscriptionId: id,
+            type: QuotaTransactionType.REFUND,
+            reservedDelta: -1,
+            idempotencyKey: `cancel-sub-${id}-class-${booking.id}`,
+            referenceType: 'CLASS_BOOKING',
+            referenceId: booking.id,
+            reason: 'Subscription cancelled: Auto-refund future class booking',
+          },
+        });
+      }
+
+      // 2. Cancel future PT Bookings and refund quota reserved
+      const futurePtBookings = await tx.ptBooking.findMany({
+        where: {
+          subscriptionId: id,
+          status: BookingStatus.BOOKED,
+          startsAt: { gte: now },
+        },
+      });
+
+      for (const booking of futurePtBookings) {
+        await tx.ptBooking.update({
+          where: { id: booking.id },
+          data: {
+            status: BookingStatus.CANCELLED,
+            cancelledAt: now,
+          },
+        });
+
+        await tx.subscriptionQuota.update({
+          where: { id: booking.quotaId },
+          data: {
+            reserved: { decrement: 1 },
+          },
+        });
+
+        await tx.quotaTransaction.create({
+          data: {
+            quotaId: booking.quotaId,
+            subscriptionId: id,
+            type: QuotaTransactionType.REFUND,
+            reservedDelta: -1,
+            idempotencyKey: `cancel-sub-${id}-pt-${booking.id}`,
+            referenceType: 'PT_BOOKING',
+            referenceId: booking.id,
+            reason: 'Subscription cancelled: Auto-refund future PT booking',
+          },
+        });
+      }
+
+      // 3. Update subscription status
+      return tx.subscription.update({
+        where: { id },
+        data: {
+          status: SubscriptionStatus.CANCELLED,
+          cancelledAt: now,
+          cancelReason: dto.reason,
+        },
+        include: {
+          member: { include: { user: true } },
+          plan: true,
+          quotas: { include: { serviceType: true } },
+          payments: true,
+        },
+      });
     });
 
     this.logger.log(`Subscription ${id} cancelled. Reason: ${dto.reason}`);
@@ -633,11 +873,14 @@ export class SubscriptionsService {
       throw new ConflictException('Cannot renew a suspended subscription');
     }
 
-    if (sourceSub.status === SubscriptionStatus.PENDING) {
-      throw new ConflictException('Cannot renew a pending subscription');
+    if (sourceSub.status === SubscriptionStatus.UPCOMING) {
+      throw new ConflictException('Cannot renew an upcoming subscription');
     }
 
-    if (sourceSub.nextSubscription) {
+    if (
+      sourceSub.nextSubscription &&
+      sourceSub.nextSubscription.status !== SubscriptionStatus.CANCELLED
+    ) {
       throw new ConflictException(
         'Subscription has already been renewed or superseded in the chain',
       );
@@ -674,31 +917,42 @@ export class SubscriptionsService {
     // 3. Concurrency-safe atomic transaction
     try {
       const renewedSub = await this.db.client.$transaction(async (tx) => {
-        // Find all active or pending non-cancelled subscriptions for this member
-        const activeOrPendingSubs = await tx.subscription.findMany({
+        // If previous renewal was cancelled, unlink its previousSubscriptionId so unique constraint passes
+        if (
+          sourceSub.nextSubscription &&
+          sourceSub.nextSubscription.status === SubscriptionStatus.CANCELLED
+        ) {
+          await tx.subscription.update({
+            where: { id: sourceSub.nextSubscription.id },
+            data: { previousSubscriptionId: null },
+          });
+        }
+
+        // Find all active or upcoming non-cancelled subscriptions for this member
+        const activeOrUpcomingSubs = await tx.subscription.findMany({
           where: {
             memberId: sourceSub.memberId,
             status: {
-              in: [SubscriptionStatus.ACTIVE, SubscriptionStatus.PENDING],
+              in: [SubscriptionStatus.ACTIVE, SubscriptionStatus.UPCOMING],
             },
           },
           orderBy: { endDate: 'desc' },
         });
 
-        // Check if there is already a PENDING subscription queued for this member
-        const hasPending = activeOrPendingSubs.some(
-          (s) => s.status === SubscriptionStatus.PENDING,
+        // Check if there is already an UPCOMING subscription queued for this member
+        const hasUpcoming = activeOrUpcomingSubs.some(
+          (s) => s.status === SubscriptionStatus.UPCOMING,
         );
-        if (hasPending) {
+        if (hasUpcoming) {
           throw new ConflictException(
-            'Member already has a pending subscription renewal queued',
+            'Member already has an upcoming subscription renewal queued',
           );
         }
 
         // Check if the source subscription is indeed the latest non-cancelled subscription for this member
         if (
-          activeOrPendingSubs.length > 0 &&
-          activeOrPendingSubs[0]!.id !== sourceSub.id
+          activeOrUpcomingSubs.length > 0 &&
+          activeOrUpcomingSubs[0]!.id !== sourceSub.id
         ) {
           throw new ConflictException(
             'Can only renew from the latest subscription in the member chain',
@@ -728,14 +982,14 @@ export class SubscriptionsService {
             initialStatus = SubscriptionStatus.ACTIVE;
             activatedAt = now;
           } else {
-            initialStatus = SubscriptionStatus.PENDING;
+            initialStatus = SubscriptionStatus.UPCOMING;
             activatedAt = null;
           }
         } else {
           // Source is still ACTIVE: renewal starts immediately after current period ends
           startDate = new Date(sourceSub.endDate);
           endDate = calculateEndDate(startDate, targetPlan.durationDays);
-          initialStatus = SubscriptionStatus.PENDING;
+          initialStatus = SubscriptionStatus.UPCOMING;
           activatedAt = null;
         }
 

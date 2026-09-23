@@ -3,6 +3,29 @@ on: [push, pull_request]
 jobs:
   verify:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: gym_management
+          POSTGRES_USER: gym
+          POSTGRES_PASSWORD: gym
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -13,8 +36,11 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm env:setup
       - run: pnpm db:validate
+      - run: pnpm db:deploy
+      - run: pnpm db:seed
       - run: pnpm typecheck
       - run: pnpm lint
       - run: pnpm test
       - run: pnpm build
       - run: pnpm format:check
+

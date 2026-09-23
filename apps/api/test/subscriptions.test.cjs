@@ -478,4 +478,60 @@ test('Phase 7 - Subscription Core Integration Tests', async (t) => {
     assert.equal(updatedDbSub.status, 'ACTIVE');
     assert.ok(updatedDbSub.activatedAt);
   });
+
+  await t.test('Early Activation: activateNow transforms UPCOMING subscription to ACTIVE immediately', async () => {
+    // 1. Create a fresh member
+    const earlyMemberRes = await request('members', {
+      method: 'POST',
+      token: staffToken,
+      body: JSON.stringify({
+        fullName: 'Early Activation Member',
+        phone: `093${Date.now().toString().slice(-7)}`,
+      }),
+    });
+    const earlyMember = await earlyMemberRes.json();
+
+    // 2. Create subscription with future startDate (e.g. 15 days in future)
+    const futureStartDate = new Date(Date.now() + 15 * 86400000).toISOString().split('T')[0];
+    const subRes = await request('subscriptions', {
+      method: 'POST',
+      token: staffToken,
+      body: JSON.stringify({
+        memberId: earlyMember.id,
+        planId: testPlanId,
+        startDate: futureStartDate,
+        paymentStatus: 'PAID',
+      }),
+    });
+    assert.equal(subRes.status, 201);
+    const sub = await subRes.json();
+    assert.equal(sub.storedStatus, 'UPCOMING');
+    assert.equal(sub.effectiveStatus, 'UPCOMING');
+    assert.equal(sub.activatedAt, null);
+
+    // 3. Call activateNow
+    const activateRes = await request(`subscriptions/${sub.id}/activate-now`, {
+      method: 'POST',
+      token: staffToken,
+    });
+    assert.equal(activateRes.status, 200);
+    const activatedSub = await activateRes.json();
+    assert.equal(activatedSub.id, sub.id);
+    assert.equal(activatedSub.storedStatus, 'ACTIVE');
+    assert.equal(activatedSub.effectiveStatus, 'ACTIVE');
+    assert.ok(activatedSub.activatedAt);
+
+    // Verify startDate was shifted to today
+    const activatedStartDate = new Date(activatedSub.startDate);
+    const now = new Date();
+    assert.ok(Math.abs(activatedStartDate.getTime() - now.getTime()) < 60000);
+
+    // 4. Calling activateNow again returns 409 Conflict
+    const reActivateRes = await request(`subscriptions/${sub.id}/activate-now`, {
+      method: 'POST',
+      token: staffToken,
+    });
+    assert.equal(reActivateRes.status, 409);
+  });
 });
+

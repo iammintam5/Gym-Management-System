@@ -574,6 +574,127 @@ export class SubscriptionsService {
     return this.findCurrentForMember(profile.id);
   }
 
+  async activateNow(
+    id: string,
+    actorId?: string,
+  ): Promise<SubscriptionDetail> {
+    const sub = await this.db.client.subscription.findUnique({
+      where: { id },
+      include: {
+        member: { include: { user: true } },
+        plan: true,
+        quotas: { include: { serviceType: true } },
+        payments: true,
+      },
+    });
+
+    if (!sub) {
+      throw new NotFoundException(`Subscription with ID "${id}" not found`);
+    }
+
+    if (sub.status !== SubscriptionStatus.UPCOMING) {
+      if (sub.status === SubscriptionStatus.ACTIVE) {
+        throw new ConflictException('Subscription is already active');
+      }
+      if (sub.status === SubscriptionStatus.CANCELLED) {
+        throw new ConflictException('Cannot activate a cancelled subscription');
+      }
+      if (sub.status === SubscriptionStatus.SUSPENDED) {
+        throw new ConflictException('Cannot activate a suspended subscription');
+      }
+      throw new ConflictException(
+        `Cannot activate subscription in status "${sub.status}"`,
+      );
+    }
+
+    if (sub.paymentStatus !== PaymentStatus.PAID) {
+      throw new ConflictException(
+        'Cannot activate subscription before payment is completed (paymentStatus must be PAID)',
+      );
+    }
+
+    const now = new Date();
+
+    const updated = await this.db.client.$transaction(async (tx) => {
+      // Check if member already has an active subscription covering now
+      const currentActive = await tx.subscription.findFirst({
+        where: {
+          memberId: sub.memberId,
+          id: { not: id },
+          status: SubscriptionStatus.ACTIVE,
+          startDate: { lte: now },
+          endDate: { gte: now },
+        },
+      });
+
+      if (currentActive) {
+        throw new ConflictException(
+          `Member already has an active subscription (${currentActive.id}) ending on ${currentActive.endDate.toISOString().split('T')[0]}. Cannot activate another subscription simultaneously.`,
+        );
+      }
+
+      const newStartDate = now;
+      const newEndDate = calculateEndDate(newStartDate, sub.plan.durationDays);
+
+      const activatedSub = await tx.subscription.update({
+        where: { id },
+        data: {
+          startDate: newStartDate,
+          endDate: newEndDate,
+          status: SubscriptionStatus.ACTIVE,
+          activatedAt: now,
+        },
+        include: {
+          member: { include: { user: true } },
+          plan: true,
+          quotas: { include: { serviceType: true } },
+          payments: true,
+        },
+      });
+
+      // Shift forward any queued renewal subscriptions directly chained to this subscription
+      let currentParentEndDate = newEndDate;
+      let chainedChild = await tx.subscription.findFirst({
+        where: {
+          previousSubscriptionId: id,
+          status: SubscriptionStatus.UPCOMING,
+        },
+        include: { plan: true },
+      });
+
+      while (chainedChild) {
+        const childStart = new Date(currentParentEndDate);
+        const childEnd = calculateEndDate(
+          childStart,
+          chainedChild.plan.durationDays,
+        );
+        await tx.subscription.update({
+          where: { id: chainedChild.id },
+          data: { startDate: childStart, endDate: childEnd },
+        });
+        currentParentEndDate = childEnd;
+        chainedChild = await tx.subscription.findFirst({
+          where: {
+            previousSubscriptionId: chainedChild.id,
+            status: SubscriptionStatus.UPCOMING,
+          },
+          include: { plan: true },
+        });
+      }
+
+      return activatedSub;
+    });
+
+    this.logger.log(
+      `Early Activation: Activated subscription ${id} immediately for member ${sub.memberId} by actor ${actorId ?? 'system'}`,
+    );
+
+    return this.mapSubscriptionDetail(
+      updated as unknown as RawSubscriptionWithRelations,
+      now,
+    );
+  }
+
   async cancel(
     id: string,
     dto: CancelSubscriptionDto,

@@ -15,6 +15,12 @@ enum UserRole {
   ADMIN
 }
 
+enum Gender {
+  MALE
+  FEMALE
+  OTHER
+}
+
 // EXPIRED is derived in contracts from ACTIVE + endDate; no cron write required.
 enum SubscriptionStatus {
   UPCOMING
@@ -117,7 +123,9 @@ model MemberProfile {
   userId        String         @unique @map("user_id") @db.Uuid
   fullName      String         @map("full_name")
   phone         String?
+  gender        Gender?
   dateOfBirth   DateTime?      @map("date_of_birth") @db.Date
+  idPhotoUrl    String?        @map("id_photo_url")
   createdAt     DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt     DateTime       @updatedAt @map("updated_at") @db.Timestamptz(3)
   user          User           @relation(fields: [userId], references: [id], onDelete: Restrict)

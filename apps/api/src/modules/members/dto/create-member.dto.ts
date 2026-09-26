@@ -2,12 +2,14 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsDateString,
   IsEmail,
+  IsEnum,
   IsNotEmpty,
   IsOptional,
   IsString,
   MaxLength,
   MinLength,
 } from 'class-validator';
+import { Gender } from '@gym/contracts';
 
 export class CreateMemberDto {
   @ApiProperty({ example: 'member@gym.local', description: 'Member account email' })
@@ -38,8 +40,26 @@ export class CreateMemberDto {
   @MaxLength(20, { message: 'Phone number must not exceed 20 characters' })
   phone?: string;
 
+  @ApiPropertyOptional({
+    enum: Gender,
+    example: Gender.MALE,
+    description: 'Member gender (MALE, FEMALE, OTHER)',
+  })
+  @IsOptional()
+  @IsEnum(Gender)
+  gender?: Gender;
+
   @ApiPropertyOptional({ example: '1995-05-20', description: 'Date of birth in YYYY-MM-DD format' })
   @IsOptional()
   @IsDateString({}, { message: 'Date of birth must be a valid ISO date string' })
   dateOfBirth?: string;
+
+  @ApiPropertyOptional({
+    example: 'https://storage.gym.local/photos/mem-123.jpg',
+    description: 'Member ID photo URL (captured at reception desk)',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000, { message: 'Photo URL must not exceed 1000 characters' })
+  idPhotoUrl?: string;
 }

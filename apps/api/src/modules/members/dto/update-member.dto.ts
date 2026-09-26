@@ -2,11 +2,13 @@ import { ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsDateString,
   IsEmail,
+  IsEnum,
   IsOptional,
   IsString,
   MaxLength,
   MinLength,
 } from 'class-validator';
+import { Gender } from '@gym/contracts';
 
 export class UpdateMemberDto {
   @ApiPropertyOptional({ example: 'Nguyen Van A', description: 'Updated full name' })
@@ -22,6 +24,15 @@ export class UpdateMemberDto {
   @MaxLength(20, { message: 'Phone number must not exceed 20 characters' })
   phone?: string;
 
+  @ApiPropertyOptional({
+    enum: Gender,
+    example: Gender.MALE,
+    description: 'Updated gender (MALE, FEMALE, OTHER, or null)',
+  })
+  @IsOptional()
+  @IsEnum(Gender)
+  gender?: Gender | null;
+
   @ApiPropertyOptional({ example: '1995-05-20', description: 'Updated date of birth (ISO date or null)' })
   @IsOptional()
   @IsDateString({}, { message: 'Date of birth must be a valid ISO date string' })
@@ -31,4 +42,13 @@ export class UpdateMemberDto {
   @IsOptional()
   @IsEmail({}, { message: 'Invalid email address' })
   email?: string;
+
+  @ApiPropertyOptional({
+    example: 'https://storage.gym.local/photos/mem-123.jpg',
+    description: 'Updated member ID photo URL',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000, { message: 'Photo URL must not exceed 1000 characters' })
+  idPhotoUrl?: string | null;
 }

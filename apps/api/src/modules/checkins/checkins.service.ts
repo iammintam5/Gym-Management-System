@@ -30,6 +30,8 @@ interface RawCheckinWithRelations {
   member?: {
     id: string;
     fullName: string;
+    gender?: string | null;
+    idPhotoUrl?: string | null;
   } | null;
   subscription?: {
     id: string;
@@ -470,6 +472,8 @@ export class CheckinsService {
         ? `MEM-${checkin.member.id.replace(/-/g, '').slice(0, 8).toUpperCase()}`
         : '',
       memberFullName: checkin.member?.fullName ?? '',
+      memberIdPhotoUrl: checkin.member?.idPhotoUrl ?? null,
+      memberGender: checkin.member?.gender ?? null,
       subscriptionId: checkin.subscriptionId,
       planName: checkin.subscription?.plan?.name ?? null,
       quotaId: checkin.quotaId,

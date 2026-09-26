@@ -128,7 +128,7 @@ export class MembersService {
             userId: user.id,
             fullName: dto.fullName.trim(),
             phone: dto.phone?.trim() || null,
-            gender: dto.gender ? (dto.gender as unknown as any) : null,
+            gender: dto.gender ? (dto.gender as Gender) : null,
             dateOfBirth: dto.dateOfBirth ? new Date(dto.dateOfBirth) : null,
             idPhotoUrl: dto.idPhotoUrl?.trim() || null,
           },
@@ -318,7 +318,7 @@ export class MembersService {
           gender:
             dto.gender !== undefined
               ? dto.gender
-                ? (dto.gender as unknown as any)
+                ? (dto.gender as Gender)
                 : null
               : undefined,
           dateOfBirth:
@@ -393,7 +393,7 @@ export class MembersService {
             gender:
               dto.gender !== undefined
                 ? dto.gender
-                  ? (dto.gender as unknown as any)
+                  ? (dto.gender as Gender)
                   : null
                 : undefined,
             dateOfBirth:

@@ -100,7 +100,7 @@ test('Reports, Notifications, Audit Trail & Scheduled Jobs Integration Tests', a
   });
   assert.equal(m2Res.status, 201);
   const member2Data = await m2Res.json();
-  const member2UserId = member2Data.userId;
+  const _member2UserId = member2Data.userId;
 
   const m2LoginRes = await request('auth/login', {
     method: 'POST',

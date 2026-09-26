@@ -1,11 +1,13 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsDateString,
+  IsEnum,
   IsOptional,
   IsString,
   MaxLength,
   MinLength,
 } from 'class-validator';
+import { Gender } from '@gym/contracts';
 
 export class UpdateMemberSelfDto {
   @ApiPropertyOptional({ example: 'Nguyen Van A', description: 'Updated full name' })
@@ -20,6 +22,15 @@ export class UpdateMemberSelfDto {
   @IsString()
   @MaxLength(20, { message: 'Phone number must not exceed 20 characters' })
   phone?: string;
+
+  @ApiPropertyOptional({
+    enum: Gender,
+    example: Gender.MALE,
+    description: 'Updated gender (MALE, FEMALE, OTHER, or null)',
+  })
+  @IsOptional()
+  @IsEnum(Gender)
+  gender?: Gender | null;
 
   @ApiPropertyOptional({ example: '1995-05-20', description: 'Updated date of birth (ISO date or null)' })
   @IsOptional()

@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import bcrypt from 'bcryptjs';
 import {
+  Gender,
   UserRole,
   type MemberDetail,
   type PaginatedMembersResponse,
@@ -28,7 +29,9 @@ export class MembersService {
     userId: string;
     fullName: string;
     phone: string | null;
+    gender?: string | null;
     dateOfBirth: Date | null;
+    idPhotoUrl?: string | null;
     createdAt: Date;
     updatedAt: Date;
     user: {
@@ -43,9 +46,11 @@ export class MembersService {
       memberCode: `MEM-${profile.id.replace(/-/g, '').slice(0, 8).toUpperCase()}`,
       fullName: profile.fullName,
       phone: profile.phone ?? null,
+      gender: profile.gender ? (profile.gender as Gender) : null,
       dateOfBirth: profile.dateOfBirth
         ? profile.dateOfBirth.toISOString().split('T')[0]
         : null,
+      idPhotoUrl: profile.idPhotoUrl ?? null,
       email: profile.user.email,
       isActive: profile.user.isActive,
       roles: profile.user.roles.map((r) => r.role.code as UserRole),
@@ -123,7 +128,9 @@ export class MembersService {
             userId: user.id,
             fullName: dto.fullName.trim(),
             phone: dto.phone?.trim() || null,
+            gender: dto.gender ? (dto.gender as unknown as any) : null,
             dateOfBirth: dto.dateOfBirth ? new Date(dto.dateOfBirth) : null,
+            idPhotoUrl: dto.idPhotoUrl?.trim() || null,
           },
           include: {
             user: {
@@ -308,6 +315,12 @@ export class MembersService {
           fullName: dto.fullName !== undefined ? dto.fullName.trim() : undefined,
           phone:
             dto.phone !== undefined ? (dto.phone ? dto.phone.trim() : null) : undefined,
+          gender:
+            dto.gender !== undefined
+              ? dto.gender
+                ? (dto.gender as unknown as any)
+                : null
+              : undefined,
           dateOfBirth:
             dto.dateOfBirth !== undefined
               ? dto.dateOfBirth
@@ -377,10 +390,22 @@ export class MembersService {
                   ? dto.phone.trim()
                   : null
                 : undefined,
+            gender:
+              dto.gender !== undefined
+                ? dto.gender
+                  ? (dto.gender as unknown as any)
+                  : null
+                : undefined,
             dateOfBirth:
               dto.dateOfBirth !== undefined
                 ? dto.dateOfBirth
                   ? new Date(dto.dateOfBirth)
+                  : null
+                : undefined,
+            idPhotoUrl:
+              dto.idPhotoUrl !== undefined
+                ? dto.idPhotoUrl
+                  ? dto.idPhotoUrl.trim()
                   : null
                 : undefined,
           },

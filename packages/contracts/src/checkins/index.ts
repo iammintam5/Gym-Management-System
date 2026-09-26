@@ -10,6 +10,8 @@ export interface CheckinDetail {
   memberId: string;
   memberCode: string;
   memberFullName: string;
+  memberIdPhotoUrl?: string | null;
+  memberGender?: string | null;
   subscriptionId: string | null;
   planName: string | null;
   quotaId: string | null;

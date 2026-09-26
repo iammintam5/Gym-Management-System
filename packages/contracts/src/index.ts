@@ -8,4 +8,6 @@ export * from './checkins';
 export * from './classes';
 export * from './bookings';
 export * from './trainers';
+export * from './payments';
 export * from './common';
+

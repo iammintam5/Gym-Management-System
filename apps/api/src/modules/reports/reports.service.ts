@@ -298,10 +298,9 @@ export class ReportsService {
     }
 
     for (const c of checkins) {
-      const h = c.checkedInAt.getHours();
-      if (h >= 6 && h <= 22) {
-        hourCounts[h] = (hourCounts[h] ?? 0) + 1;
-      }
+      const rawH = c.checkedInAt.getHours();
+      const h = Math.min(22, Math.max(6, rawH));
+      hourCounts[h] = (hourCounts[h] ?? 0) + 1;
     }
 
     let peakHour: number | null = null;

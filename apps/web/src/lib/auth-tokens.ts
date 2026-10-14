@@ -30,7 +30,8 @@ export function setToken(key: string, value: string) {
 
 export function clearTokens() {
   if (typeof window !== 'undefined') {
-    deleteCookie(ACCESS_TOKEN_KEY);
-    deleteCookie(REFRESH_TOKEN_KEY);
+    deleteCookie(ACCESS_TOKEN_KEY, { path: '/' });
+    deleteCookie(REFRESH_TOKEN_KEY, { path: '/' });
   }
 }
+

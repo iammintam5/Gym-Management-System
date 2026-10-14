@@ -64,9 +64,20 @@ Trước khi kết thúc bất kỳ task nào, Agent luôn phải đảm bảo c
 
 ---
 
-### 5. NHỮNG ĐIỀU CẤM (DON'TS)
+### 5. NHỮNG ĐIỀU CẤM TRONG CODE (CODE DON'TS)
 - ❌ KHÔNG dùng kiểu dữ liệu `any` bừa bãi. Phải dùng type chặt chẽ từ `@gym/contracts`.
 - ❌ KHÔNG để lại các biến thừa không dùng trong code và test (gây lỗi ESLint `@typescript-eslint/no-unused-vars` trên CI).
 - ❌ KHÔNG hardcode connection string, secret keys, mật khẩu vào mã nguồn. Luôn lấy qua `ConfigService`.
 - ❌ KHÔNG tự ý xóa các comment giải thích nghiệp vụ hoặc docstrings đã có.
 - ❌ KHÔNG bypass phân quyền RBAC hoặc tạo các backdoor endpoint mà không có guard bảo vệ.
+
+---
+
+### 6. QUY TẮC THIẾT KẾ UI/UX & CHỐNG GIAO DIỆN KIỂU AI (ANTI-AI SLOP UI RULES)
+Khi xây dựng giao diện trên `@gym/web` (Aura Gym — Dark `#09090B` + Fiery Orange `#FF5500` + Font `Oswald` / `Geist`), Agent BẮT BUỘC tuân thủ:
+1. ❌ **KHÔNG đưa ngôn ngữ kỹ thuật/kiến trúc lên UI**: Tuyệt đối không hiển thị tên API endpoint (`GET / POST /...`), thuật ngữ hệ thống (`RBAC`, `ACID`, `Quota 2 pha`, `Anti-passback`, `Seed Account`), hoặc badge kỹ thuật (`API Connected`, `[ROLE: ADMIN]`) lên màn hình người dùng.
+2. ❌ **KHÔNG lạm dụng "AI Card Pattern"**: Cấm lặp lại bố cục máy móc gồm *(Pill badge nhỏ trên đầu tiêu đề + Hộp vuông chứa icon màu nhạt + Đoạn văn giải thích 3 dòng)*.
+3. ❌ **KHÔNG viết văn mô tả tính năng trong Dashboard**: Trong `/dashboard/*`, đi thẳng vào **Bảng dữ liệu (`Table`), Thanh công cụ tìm kiếm/lọc (`Toolbar`), Form thao tác và Số liệu KPI tối giản**. Không tạo các card chỉ để "giới thiệu chức năng".
+4. ❌ **KHÔNG thêm dòng chú thích phụ (`sublabel`) trong Sidebar/Menu**: Thanh điều hướng giữ gọn gàng, chỉ gồm `Icon + Nhãn ngắn gọn 1–3 từ`.
+5. ❌ **KHÔNG dùng hộp icon/con số giả lập thay cho Hình ảnh thật trên trang Public/Auth**: Trang Landing Page và Login phải ưu tiên nhiếp ảnh phòng tập tương phản cao (B&W / Dark Moody) và câu chữ cô đọng (tối đa 1–2 dòng mỗi khối).
+

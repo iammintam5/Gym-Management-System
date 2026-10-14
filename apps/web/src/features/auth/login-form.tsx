@@ -6,17 +6,25 @@ import { z } from 'zod';
 import { Button } from '@gym/ui';
 import type { LoginRequest, LoginResponse } from '@gym/contracts';
 import { ApiError, apiClient } from '@/services/api-client';
+import { useAuthStore } from '@/stores/auth-store';
+import { setToken, ACCESS_TOKEN_KEY, REFRESH_TOKEN_KEY } from '@/lib/auth-tokens';
+import { useRouter } from 'next/navigation';
+
 const schema = z.object({
   email: z.email('Email không hợp lệ').max(254),
   password: z.string().min(8, 'Mật khẩu cần ít nhất 8 ký tự').max(128),
 });
+
 export function LoginForm() {
   const [message, setMessage] = useState('');
+  const router = useRouter();
+  const setUser = useAuthStore((state) => state.setUser);
   const {
     register,
     handleSubmit,
     formState: { errors, isSubmitting },
   } = useForm<LoginRequest>({ resolver: zodResolver(schema) });
+
   async function submit(values: LoginRequest) {
     setMessage('');
     try {
@@ -24,9 +32,16 @@ export function LoginForm() {
         method: 'POST',
         body: JSON.stringify(values),
       });
-      setMessage(
-        `Đăng nhập thành công! Xin chào ${data.user.fullName || data.user.email} [Vai trò: ${data.user.roles.join(', ')}]`,
-      );
+      
+      // Save tokens
+      setToken(ACCESS_TOKEN_KEY, data.tokens.accessToken);
+      setToken(REFRESH_TOKEN_KEY, data.tokens.refreshToken);
+      
+      // Update store
+      setUser(data.user);
+      
+      setMessage('Đăng nhập thành công! Đang chuyển hướng...');
+      router.push('/dashboard');
     } catch (error) {
       setMessage(
         error instanceof ApiError
@@ -35,6 +50,7 @@ export function LoginForm() {
       );
     }
   }
+
   return (
     <form onSubmit={handleSubmit(submit)} className="space-y-5" noValidate>
       <div>

@@ -1,58 +1,126 @@
 @import 'tailwindcss';
-@import "tw-animate-css";
-@import "shadcn/tailwind.css";
+@import 'tw-animate-css';
+@import 'shadcn/tailwind.css';
 
 @custom-variant dark (&:is(.dark *));
 @source '../../../../packages/ui/src';
+
+/* ==========================================================================
+   AURA GYM DESIGN TOKENS (Inspired by Fitcore Athletic Dark & Fiery Orange)
+   - Brand Primary: #FF5500 -> oklch(0.666 0.225 36.5)
+   - Dark Pitch Background: #09090B -> oklch(0.115 0.005 285)
+   - Dark Surface / Card: #121214 -> oklch(0.165 0.006 285)
+   - Hairline Border (Dark): #27272A -> oklch(0.27 0.008 285)
+   ========================================================================== */
+
 :root {
   color-scheme: light;
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
+  --background: oklch(0.985 0 0); /* #FAFAFA */
+  --foreground: oklch(0.115 0.005 285); /* #09090B */
+  --card: oklch(1 0 0); /* #FFFFFF */
+  --card-foreground: oklch(0.115 0.005 285);
   --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.115 0.005 285);
+
+  /* Brand Primary: Fiery Athletic Orange (#FF5500) */
+  --primary: oklch(0.666 0.225 36.5);
   --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --radius: 0.625rem;
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
+
+  /* Secondary & Surface Accents */
+  --secondary: oklch(0.955 0.005 285); /* #F4F4F5 */
+  --secondary-foreground: oklch(0.165 0.006 285);
+  --muted: oklch(0.955 0.005 285);
+  --muted-foreground: oklch(0.52 0.012 285); /* #71717A */
+  --accent: oklch(0.96 0.03 36.5); /* Soft Orange Tint */
+  --accent-foreground: oklch(0.55 0.21 36.5);
+
+  /* Semantic Status Colors */
+  --success: oklch(0.696 0.17 162.48); /* #10B981 - ACTIVE / PAID */
+  --success-foreground: oklch(0.985 0 0);
+  --warning: oklch(0.769 0.188 70.08); /* #F59E0B - UPCOMING / RESERVED / SUSPENDED */
+  --warning-foreground: oklch(0.145 0 0);
+  --destructive: oklch(0.637 0.237 25.33); /* #EF4444 - CANCELLED / EXPIRED / NO_SHOW */
+
+  /* Borders & Focus Ring */
+  --border: oklch(0.9 0.006 285); /* #E4E4E7 */
+  --input: oklch(0.9 0.006 285);
+  --ring: oklch(0.666 0.225 36.5); /* Orange Focus Ring */
+
+  /* Analytics & Charts Palette */
+  --chart-1: oklch(0.666 0.225 36.5); /* Primary Orange #FF5500 */
+  --chart-2: oklch(0.75 0.18 55); /* Warm Amber #FF8A00 */
+  --chart-3: oklch(0.696 0.17 162.48); /* Emerald #10B981 */
+  --chart-4: oklch(0.62 0.19 255); /* Electric Blue #3B82F6 */
+  --chart-5: oklch(0.52 0.012 285); /* Neutral Zinc #71717A */
+
+  --radius: 0.75rem; /* 12px card radius */
+
+  /* Sidebar Tokens */
+  --sidebar: oklch(0.115 0.005 285); /* Dark Sidebar by default */
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.666 0.225 36.5);
   --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+  --sidebar-accent: oklch(0.2 0.008 285);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(0.27 0.008 285);
+  --sidebar-ring: oklch(0.666 0.225 36.5);
 }
-body {
-  margin: 0;
-  background: #f8fafc;
-  color: #0f172a;
-}
-button,
-a,
-input {
-  outline-offset: 4px;
+
+.dark {
+  color-scheme: dark;
+  --background: oklch(0.115 0.005 285); /* #09090B - Deep Pitch Black */
+  --foreground: oklch(0.985 0 0); /* #FAFAFA - Pure Crisp White */
+  --card: oklch(0.165 0.006 285); /* #121214 - Dark Charcoal Surface */
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.165 0.006 285);
+  --popover-foreground: oklch(0.985 0 0);
+
+  /* Brand Primary: Fiery Athletic Orange (#FF5500) */
+  --primary: oklch(0.666 0.225 36.5);
+  --primary-foreground: oklch(0.985 0 0);
+
+  /* Secondary & Muted Dark Surfaces */
+  --secondary: oklch(0.22 0.008 285); /* #18181B */
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.22 0.008 285);
+  --muted-foreground: oklch(0.705 0.012 285); /* #A1A1AA */
+  --accent: oklch(0.25 0.04 36.5);
+  --accent-foreground: oklch(0.985 0 0);
+
+  /* Semantic Status Colors */
+  --success: oklch(0.696 0.17 162.48);
+  --success-foreground: oklch(0.985 0 0);
+  --warning: oklch(0.769 0.188 70.08);
+  --warning-foreground: oklch(0.145 0 0);
+  --destructive: oklch(0.65 0.22 25);
+
+  /* Hairline Borders (#27272A) & Orange Ring */
+  --border: oklch(0.27 0.008 285);
+  --input: oklch(0.27 0.008 285);
+  --ring: oklch(0.666 0.225 36.5);
+
+  /* Analytics & Charts Palette */
+  --chart-1: oklch(0.666 0.225 36.5);
+  --chart-2: oklch(0.75 0.18 55);
+  --chart-3: oklch(0.696 0.17 162.48);
+  --chart-4: oklch(0.62 0.19 255);
+  --chart-5: oklch(0.705 0.012 285);
+
+  /* Sidebar Tokens */
+  --sidebar: oklch(0.14 0.006 285);
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.666 0.225 36.5);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.22 0.008 285);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(0.27 0.008 285);
+  --sidebar-ring: oklch(0.666 0.225 36.5);
 }
 
 @theme inline {
-  --font-heading: var(--font-sans);
+  --font-heading: var(--font-heading), var(--font-sans);
   --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -70,6 +138,10 @@ input {
   --color-input: var(--input);
   --color-border: var(--border);
   --color-destructive: var(--destructive);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-warning: var(--warning);
+  --color-success-foreground: var(--success-foreground);
+  --color-success: var(--success);
   --color-accent-foreground: var(--accent-foreground);
   --color-accent: var(--accent);
   --color-muted-foreground: var(--muted-foreground);
@@ -93,38 +165,10 @@ input {
   --radius-4xl: calc(var(--radius) * 2.6);
 }
 
-.dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+button,
+a,
+input {
+  outline-offset: 4px;
 }
 
 @layer base {
@@ -132,6 +176,7 @@ input {
     @apply border-border outline-ring/50;
   }
   body {
+    margin: 0;
     @apply bg-background text-foreground;
   }
   html {

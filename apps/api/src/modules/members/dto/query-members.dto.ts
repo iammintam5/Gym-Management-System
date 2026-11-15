@@ -12,6 +12,15 @@ import {
 } from 'class-validator';
 
 export class QueryMembersDto {
+  @IsOptional()
+  @IsIn(['All', 'Active', 'Upcoming', 'Frozen', 'Expired', 'None'])
+  directoryStatus?: string;
+
+  @IsOptional()
+  @Transform(({ value }) => value === 'true' || value === true)
+  @IsBoolean()
+  includePhoto?: boolean;
+
   @ApiPropertyOptional({ default: 1, minimum: 1, description: 'Page number' })
   @IsOptional()
   @Type(() => Number)
@@ -33,7 +42,8 @@ export class QueryMembersDto {
   limit: number = 20;
 
   @ApiPropertyOptional({
-    description: 'Search by full name, email, phone, or member code (case-insensitive)',
+    description:
+      'Search by full name, email, phone, or member code (case-insensitive)',
   })
   @IsOptional()
   @IsString()
@@ -59,7 +69,8 @@ export class QueryMembersDto {
   })
   @IsOptional()
   @IsIn(['createdAt', 'updatedAt', 'fullName', 'phone', 'dateOfBirth'])
-  sortBy: 'createdAt' | 'updatedAt' | 'fullName' | 'phone' | 'dateOfBirth' = 'createdAt';
+  sortBy: 'createdAt' | 'updatedAt' | 'fullName' | 'phone' | 'dateOfBirth' =
+    'createdAt';
 
   @ApiPropertyOptional({
     enum: ['asc', 'desc'],

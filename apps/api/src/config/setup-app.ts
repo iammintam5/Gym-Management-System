@@ -1,7 +1,13 @@
 import { ValidationPipe, type INestApplication } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 export function setupApp(app: INestApplication) {
+  const expressApp = app as Partial<NestExpressApplication>;
+  if (typeof expressApp.useBodyParser === 'function') {
+    expressApp.useBodyParser('json', { limit: '2mb' });
+    expressApp.useBodyParser('urlencoded', { limit: '2mb', extended: true });
+  }
   const config = app.get(ConfigService);
   app.setGlobalPrefix('api');
   app.useGlobalPipes(

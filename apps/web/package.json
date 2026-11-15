@@ -3,11 +3,17 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev --port 3000",
-    "build": "next build",
+    "dev": "next dev --webpack --port 3000",
+    "dev:https": "next dev --webpack --hostname 0.0.0.0 --port 3000 --experimental-https",
+    "build": "next build --webpack",
     "start": "next start --port 3000",
     "lint": "eslint .",
-    "typecheck": "next typegen && tsc --noEmit"
+    "test:camera": "node --test test/camera-stream.test.cjs",
+    "test:face": "node --test test/face-recognition.test.cjs",
+    "test:members": "node --test test/member-photo-onboarding.test.cjs test/staff-modal-flow.test.cjs",
+    "test:cache": "node --test test/api-client-cache.test.cjs test/query-provider.test.cjs",
+    "typecheck": "next typegen && tsc --noEmit",
+    "test": "node --test test/*.test.cjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",
@@ -16,6 +22,7 @@
     "@hookform/resolvers": "^5.2.0",
     "@next/env": "^16.1.0",
     "@tanstack/react-query": "^5.90.0",
+    "@vladmandic/face-api": "1.7.15",
     "class-variance-authority": "^0.7.1",
     "cn": "^0.4.0",
     "cookies-next": "^6.1.1",
@@ -39,6 +46,7 @@
     "@types/react-dom": "^19.2.0",
     "eslint": "^9.39.0",
     "eslint-plugin-import": "^2.32.0",
+    "jpeg-js": "0.4.4",
     "tailwindcss": "^4.2.0",
     "typescript": "^5.9.3"
   }

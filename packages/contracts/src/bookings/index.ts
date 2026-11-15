@@ -24,6 +24,7 @@ export interface ClassBookingDetail {
   memberId: string;
   memberCode: string;
   memberFullName: string;
+  memberIdPhotoUrl?: string | null;
   subscriptionId: string;
   quotaId: string;
   status: BookingStatus;
@@ -49,6 +50,7 @@ export interface PtBookingDetail {
   memberCode: string;
   memberFullName: string;
   memberPhone?: string | null;
+  memberIdPhotoUrl?: string | null;
   trainerId: string;
   trainerName: string;
   trainerPhone?: string | null;
@@ -73,4 +75,3 @@ export interface PaginatedPtBookingsResponse {
     totalPages: number;
   };
 }
-

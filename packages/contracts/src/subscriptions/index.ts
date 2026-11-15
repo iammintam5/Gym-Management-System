@@ -26,6 +26,8 @@ export interface SubscriptionMemberSummary {
   fullName: string;
   email?: string;
   phone?: string | null;
+  idPhotoUrl?: string | null;
+  dateOfBirth?: string | null;
 }
 
 export interface SubscriptionPlanSummary {
@@ -63,6 +65,7 @@ export interface SubscriptionSummary {
 }
 
 export interface SubscriptionDetail {
+  freezeCount?: number;
   id: string;
   memberId: string;
   planId: string;
@@ -96,6 +99,7 @@ export interface PaginatedSubscriptionsResponse {
 }
 
 export interface CreateSubscriptionRequest {
+  idempotencyKey?: string;
   memberId: string;
   planId: string;
   startDate?: string;
@@ -109,6 +113,7 @@ export interface CancelSubscriptionRequest {
 }
 
 export interface RenewSubscriptionRequest {
+  idempotencyKey?: string;
   planId?: string;
   paymentMethod?: string;
   paymentStatus?: PaymentStatus;

@@ -65,3 +65,29 @@ export interface UpdateMemberSelfRequest {
   gender?: Gender | null;
   dateOfBirth?: string | Date | null;
 }
+
+export interface MemberFaceConflict {
+  memberId: string;
+  memberCode: string;
+  fullName: string;
+}
+
+export interface FaceDescriptorSnapshot {
+  descriptor: number[];
+  mirroredDescriptor: number[];
+  modelVersion: string;
+  photoVersion: string;
+}
+
+export interface MemberFaceError {
+  code:
+    | 'DUPLICATE_MEMBER_FACE'
+    | 'INVALID_MEMBER_FACE_PHOTO'
+    | 'FACE_INDEX_NOT_READY';
+  message: string;
+  conflicts?: MemberFaceConflict[];
+}
+
+export interface MemberDirectoryResponse extends PaginatedMembersResponse {
+  subscriptions: import('../subscriptions').SubscriptionDetail[];
+}

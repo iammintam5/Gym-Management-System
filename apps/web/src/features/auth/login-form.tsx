@@ -17,7 +17,8 @@ import {
   REFRESH_TOKEN_KEY,
 } from '@/lib/auth-tokens';
 import { useRouter } from 'next/navigation';
-import { Loader2 } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Loader2, Eye, EyeOff } from 'lucide-react';
 
 const schema = z.object({
   email: z.email('Email không hợp lệ').max(254),
@@ -57,13 +58,14 @@ const DEMO_ACCOUNTS: ReadonlyArray<{
 ];
 
 export function resolveRoleDashboardPath(roles: UserRole[]): string {
-  if (roles.includes(UserRole.ADMIN)) return '/dashboard/admin';
+  if (roles.includes(UserRole.ADMIN)) return '/dashboard';
   if (roles.includes(UserRole.STAFF)) return '/dashboard/staff';
-  if (roles.includes(UserRole.PT)) return '/dashboard/trainer';
+  if (roles.includes(UserRole.PT)) return '/dashboard/schedule';
   return '/dashboard/member';
 }
 
 export function LoginForm() {
+  const [showPassword, setShowPassword] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const router = useRouter();
   const setUser = useAuthStore((state) => state.setUser);
@@ -98,7 +100,12 @@ export function LoginForm() {
       setToken(REFRESH_TOKEN_KEY, data.tokens.refreshToken);
       setUser(data.user);
 
-      router.push(resolveRoleDashboardPath(data.user.roles));
+      const next = new URLSearchParams(window.location.search).get('next');
+      router.push(
+        next && /^\/camera(?:\?|$)/.test(next)
+          ? next
+          : resolveRoleDashboardPath(data.user.roles),
+      );
     } catch (error) {
       setErrorMessage(
         error instanceof ApiError
@@ -121,13 +128,17 @@ export function LoginForm() {
           <input
             id="email"
             type="email"
+            aria-invalid={!!errors.email}
+            aria-describedby={errors.email ? 'email-error' : undefined}
             autoComplete="email"
             placeholder="name@gym.com"
             className="w-full rounded-lg border border-zinc-800 bg-[#0d0d0f] px-3.5 py-2.5 text-sm text-white placeholder-zinc-600 transition-colors focus:border-[#FF5500] focus:outline-none"
             {...register('email')}
           />
           {errors.email ? (
-            <p className="mt-1 text-xs text-red-400">{errors.email.message}</p>
+            <p id="email-error" className="mt-1 text-sm text-red-400">
+              {errors.email.message}
+            </p>
           ) : null}
         </div>
 
@@ -140,14 +151,29 @@ export function LoginForm() {
           </label>
           <input
             id="password"
-            type="password"
+            type={showPassword ? 'text' : 'password'}
+            aria-invalid={!!errors.password}
+            aria-describedby={errors.password ? 'password-error' : undefined}
             autoComplete="current-password"
             placeholder="••••••••"
             className="w-full rounded-lg border border-zinc-800 bg-[#0d0d0f] px-3.5 py-2.5 text-sm text-white placeholder-zinc-600 transition-colors focus:border-[#FF5500] focus:outline-none"
             {...register('password')}
           />
+          <button
+            type="button"
+            aria-pressed={showPassword}
+            onClick={() => setShowPassword((value) => !value)}
+            className="mt-2 inline-flex items-center gap-2 rounded-lg py-1 text-sm text-zinc-300"
+          >
+            {showPassword ? (
+              <EyeOff aria-hidden="true" className="size-4" />
+            ) : (
+              <Eye aria-hidden="true" className="size-4" />
+            )}
+            {showPassword ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'}
+          </button>
           {errors.password ? (
-            <p className="mt-1 text-xs text-red-400">
+            <p id="password-error" className="mt-1 text-sm text-red-400">
               {errors.password.message}
             </p>
           ) : null}
@@ -159,10 +185,10 @@ export function LoginForm() {
           </p>
         ) : null}
 
-        <button
+        <Button
           type="submit"
           disabled={isSubmitting}
-          className="inline-flex w-full cursor-pointer items-center justify-center gap-2 rounded-full bg-[#FF5500] py-3 text-xs font-semibold text-white transition-colors hover:bg-[#e04b00] disabled:cursor-not-allowed disabled:opacity-60"
+          className="inline-flex w-full cursor-pointer items-center justify-center gap-2 h-11 rounded-xl bg-[#FF5500] py-3 text-sm font-semibold text-white transition-colors hover:bg-[#e04b00] disabled:cursor-not-allowed disabled:opacity-60"
         >
           {isSubmitting ? (
             <>
@@ -172,26 +198,28 @@ export function LoginForm() {
           ) : (
             <span>Đăng nhập</span>
           )}
-        </button>
+        </Button>
       </form>
 
-      <div className="border-t border-zinc-900 pt-4">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <span className="text-[11px] text-zinc-500">Điền nhanh:</span>
-          <div className="flex flex-wrap gap-1.5">
-            {DEMO_ACCOUNTS.map((acc) => (
-              <button
-                key={acc.role}
-                type="button"
-                onClick={() => fillDemoAccount(acc.email, acc.password)}
-                className="cursor-pointer rounded border border-zinc-800 px-2.5 py-1 text-[11px] text-zinc-400 transition-colors hover:border-zinc-700 hover:text-white"
-              >
-                {acc.label}
-              </button>
-            ))}
+      {process.env.NODE_ENV !== 'production' && (
+        <div className="border-t border-zinc-900 pt-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="text-[11px] text-zinc-500">Điền nhanh:</span>
+            <div className="flex flex-wrap gap-1.5">
+              {DEMO_ACCOUNTS.map((acc) => (
+                <button
+                  key={acc.role}
+                  type="button"
+                  onClick={() => fillDemoAccount(acc.email, acc.password)}
+                  className="cursor-pointer rounded border border-zinc-800 px-2.5 py-1 text-[11px] text-zinc-400 transition-colors hover:border-zinc-700 hover:text-white"
+                >
+                  {acc.label}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

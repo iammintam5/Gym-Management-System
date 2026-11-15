@@ -32,7 +32,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
     <html
       lang="vi"
       className={cn(
-        'font-sans antialiased',
+        'dark font-sans antialiased',
         geistSans.variable,
         geistMono.variable,
         oswaldHeading.variable,

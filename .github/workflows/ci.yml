@@ -41,6 +41,11 @@ jobs:
       - run: pnpm db:seed
       - run: pnpm typecheck
       - run: pnpm lint
+      - name: Verify native PostgreSQL test binaries
+        run: |
+          PG_BINDIR="$(pg_config --bindir)"
+          "$PG_BINDIR/initdb" --version
+          "$PG_BINDIR/postgres" --version
+          "$PG_BINDIR/pg_ctl" --version
       - run: pnpm test
       - run: pnpm build
-

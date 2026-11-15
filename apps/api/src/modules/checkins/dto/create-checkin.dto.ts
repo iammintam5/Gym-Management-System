@@ -1,7 +1,24 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsOptional, IsString, IsUUID, MaxLength } from 'class-validator';
+import {
+  IsOptional,
+  IsString,
+  IsUUID,
+  MaxLength,
+  Matches,
+} from 'class-validator';
 
 export class CreateCheckinDto {
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @Matches(/^[a-zA-Z0-9_-]{8,100}$/)
+  idempotencyKey?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @Matches(/^[a-f0-9]{32}$/)
+  photoVersion?: string;
+
   @ApiPropertyOptional({
     description: 'Member profile ID (UUID)',
     example: '11111111-1111-1111-1111-111111111111',

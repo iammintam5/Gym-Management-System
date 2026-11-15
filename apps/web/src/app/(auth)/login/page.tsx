@@ -26,11 +26,11 @@ export default function LoginPage() {
 
         <div className="relative z-10 max-w-md space-y-2">
           <h1 className="font-heading text-5xl leading-none font-bold uppercase text-white">
-            UNLEASH YOUR <span className="text-[#FF5500]">POTENTIAL</span>
+            BỨT PHÁ <span className="text-[#FF5500]">GIỚI HẠN</span>
           </h1>
           <p className="text-xs leading-relaxed text-zinc-300">
-            Discipline, strength, and consistency — welcome back to your
-            training workspace.
+            Kỷ luật, sức mạnh và sự bền bỉ — chào mừng bạn trở lại không gian
+            tập luyện chuyên nghiệp tại Aura Gym.
           </p>
         </div>
       </div>

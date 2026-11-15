@@ -32,6 +32,7 @@ test('Phase 2 - Authentication & RBAC Integration Tests', async (t) => {
   // Ensure test users exist
   const seedAdmin = await db.client.user.findUnique({
     where: { email: 'admin@gym.com' },
+    include: { employeeProfile: true },
   });
   assert.ok(seedAdmin, 'Admin user should be seeded in DB');
 
@@ -127,7 +128,7 @@ test('Phase 2 - Authentication & RBAC Integration Tests', async (t) => {
         const data = await res.json();
         assert.equal(data.email, 'admin@gym.com');
         assert.deepEqual(data.roles, ['ADMIN']);
-        assert.equal(data.fullName, 'System Administrator');
+        assert.equal(data.fullName, seedAdmin.employeeProfile.fullName);
         assert.equal(data.passwordHash, undefined);
       },
     );

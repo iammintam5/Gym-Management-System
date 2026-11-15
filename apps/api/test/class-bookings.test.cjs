@@ -134,9 +134,7 @@ test('Class Bookings & Attendance Integration Tests', async (t) => {
       durationDays: 30,
       price: 600000,
       isActive: true,
-      entitlements: [
-        { service: 'CLASS', limitType: 'COUNT', limitValue: 5 },
-      ],
+      entitlements: [{ service: 'CLASS', limitType: 'COUNT', limitValue: 5 }],
     }),
   });
   assert.equal(classPlanRes.status, 201);
@@ -205,320 +203,398 @@ test('Class Bookings & Attendance Integration Tests', async (t) => {
   // ========================================================
   // Test 1: Successful Class Slot Booking & Quota Reservation
   // ========================================================
-  await t.test('POST /api/class-bookings - Member reserves class slot', async () => {
-    const bookRes = await request('class-bookings', {
-      method: 'POST',
-      token: memberAToken,
-      body: JSON.stringify({ scheduleId }),
-    });
-    assert.equal(bookRes.status, 201);
-    const booking = await bookRes.json();
-    assert.equal(booking.scheduleId, scheduleId);
-    assert.equal(booking.memberId, memberAProfile.id);
-    assert.equal(booking.status, 'BOOKED');
-    assert.equal(booking.attendance, 'PENDING');
-    memberABookingId = booking.id;
+  await t.test(
+    'POST /api/class-bookings - Member reserves class slot',
+    async () => {
+      const bookRes = await request('class-bookings', {
+        method: 'POST',
+        token: memberAToken,
+        body: JSON.stringify({ scheduleId }),
+      });
+      assert.equal(bookRes.status, 201);
+      const booking = await bookRes.json();
+      assert.equal(booking.scheduleId, scheduleId);
+      assert.equal(booking.memberId, memberAProfile.id);
+      assert.equal(booking.status, 'BOOKED');
+      assert.equal(booking.attendance, 'PENDING');
+      memberABookingId = booking.id;
 
-    // Verify Quota: reserved incremented from 0 to 1, used is 0
-    const quota = await db.client.subscriptionQuota.findUnique({
-      where: { id: booking.quotaId },
-    });
-    assert.equal(quota.reserved, 1);
-    assert.equal(quota.used, 0);
+      // Verify Quota: reserved incremented from 0 to 1, used is 0
+      const quota = await db.client.subscriptionQuota.findUnique({
+        where: { id: booking.quotaId },
+      });
+      assert.equal(quota.reserved, 1);
+      assert.equal(quota.used, 0);
 
-    // Verify QuotaTransaction (type: RESERVE, reservedDelta: 1)
-    const txLog = await db.client.quotaTransaction.findFirst({
-      where: {
-        quotaId: booking.quotaId,
-        type: 'RESERVE',
-      },
-      orderBy: { createdAt: 'desc' },
-    });
-    assert.ok(txLog);
-    assert.equal(txLog.reservedDelta, 1);
-  });
+      // Verify QuotaTransaction (type: RESERVE, reservedDelta: 1)
+      const txLog = await db.client.quotaTransaction.findFirst({
+        where: {
+          quotaId: booking.quotaId,
+          type: 'RESERVE',
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+      assert.ok(txLog);
+      assert.equal(txLog.reservedDelta, 1);
+    },
+  );
 
   // ========================================================
   // Test 2: Duplicate Booking Prevention
   // ========================================================
-  await t.test('POST /api/class-bookings - Reject duplicate booking', async () => {
-    const dupRes = await request('class-bookings', {
-      method: 'POST',
-      token: memberAToken,
-      body: JSON.stringify({ scheduleId }),
-    });
-    assert.equal(dupRes.status, 409);
-  });
+  await t.test(
+    'POST /api/class-bookings - Reject duplicate booking',
+    async () => {
+      const dupRes = await request('class-bookings', {
+        method: 'POST',
+        token: memberAToken,
+        body: JSON.stringify({ scheduleId }),
+      });
+      assert.equal(dupRes.status, 409);
+    },
+  );
 
   // ========================================================
   // Test 3: No Active Subscription Rejection
   // ========================================================
-  await t.test('POST /api/class-bookings - Reject member without class quota', async () => {
-    // Member C without subscription
-    const memberCEmail = `member.c.${Date.now()}@gym.local`;
-    const memberCRes = await request('members', {
-      method: 'POST',
-      token: adminToken,
-      body: JSON.stringify({
-        email: memberCEmail,
-        password: 'Password@123456',
-        fullName: 'Charlie No Sub',
-        phone: `093${Math.floor(1000000 + Math.random() * 9000000)}`,
-      }),
-    });
-    assert.equal(memberCRes.status, 201);
+  await t.test(
+    'POST /api/class-bookings - Reject member without class quota',
+    async () => {
+      // Member C without subscription
+      const memberCEmail = `member.c.${Date.now()}@gym.local`;
+      const memberCRes = await request('members', {
+        method: 'POST',
+        token: adminToken,
+        body: JSON.stringify({
+          email: memberCEmail,
+          password: 'Password@123456',
+          fullName: 'Charlie No Sub',
+          phone: `093${Math.floor(1000000 + Math.random() * 9000000)}`,
+        }),
+      });
+      assert.equal(memberCRes.status, 201);
 
-    const memberCLogin = await request('auth/login', {
-      method: 'POST',
-      body: JSON.stringify({
-        email: memberCEmail,
-        password: 'Password@123456',
-      }),
-    });
-    assert.equal(memberCLogin.status, 200);
-    const memberCToken = (await memberCLogin.json()).tokens.accessToken;
+      const memberCLogin = await request('auth/login', {
+        method: 'POST',
+        body: JSON.stringify({
+          email: memberCEmail,
+          password: 'Password@123456',
+        }),
+      });
+      assert.equal(memberCLogin.status, 200);
+      const memberCToken = (await memberCLogin.json()).tokens.accessToken;
 
-    const noSubRes = await request('class-bookings', {
-      method: 'POST',
-      token: memberCToken,
-      body: JSON.stringify({ scheduleId }),
-    });
-    assert.equal(noSubRes.status, 400);
-  });
+      const noSubRes = await request('class-bookings', {
+        method: 'POST',
+        token: memberCToken,
+        body: JSON.stringify({ scheduleId }),
+      });
+      assert.equal(noSubRes.status, 400);
+    },
+  );
 
   // ========================================================
   // Test 4: Concurrency & Capacity Constraint
   // ========================================================
-  await t.test('POST /api/class-bookings - Fully booked schedule rejects over-booking', async () => {
-    // Create schedule with capacity = 1
-    const singleSlotStart = new Date(tomorrow.getTime() + 2 * 3600 * 1000);
-    const singleSlotEnd = new Date(singleSlotStart.getTime() + 3600 * 1000);
+  await t.test(
+    'POST /api/class-bookings - Fully booked schedule rejects over-booking',
+    async () => {
+      // Create schedule with capacity = 1
+      const singleSlotStart = new Date(tomorrow.getTime() + 2 * 3600 * 1000);
+      const singleSlotEnd = new Date(singleSlotStart.getTime() + 3600 * 1000);
 
-    const singleSlotSchedRes = await request('class-schedules', {
-      method: 'POST',
-      token: staffToken,
-      body: JSON.stringify({
-        classId: gymClassId,
-        trainerId: coach.id,
-        startsAt: singleSlotStart.toISOString(),
-        endsAt: singleSlotEnd.toISOString(),
-        capacity: 5, // minimum is 5, but we can test reaching capacity by reducing or booking
-      }),
-    });
-    assert.equal(singleSlotSchedRes.status, 201);
-    const singleSched = await singleSlotSchedRes.json();
+      const singleSlotSchedRes = await request('class-schedules', {
+        method: 'POST',
+        token: staffToken,
+        body: JSON.stringify({
+          classId: gymClassId,
+          trainerId: coach.id,
+          startsAt: singleSlotStart.toISOString(),
+          endsAt: singleSlotEnd.toISOString(),
+          capacity: 5, // minimum is 5, but we can test reaching capacity by reducing or booking
+        }),
+      });
+      assert.equal(singleSlotSchedRes.status, 201);
+      const singleSched = await singleSlotSchedRes.json();
 
-    // Set schedule capacity to 1 to test full capacity enforcement
-    await db.client.classSchedule.update({
-      where: { id: singleSched.id },
-      data: { capacity: 1 },
-    });
+      // Set schedule capacity to 1 to test full capacity enforcement
+      await db.client.classSchedule.update({
+        where: { id: singleSched.id },
+        data: { capacity: 1 },
+      });
 
-    // Member B books the 1st and only slot -> 201 Created
-    const book1 = await request('class-bookings', {
-      method: 'POST',
-      token: memberBToken,
-      body: JSON.stringify({ scheduleId: singleSched.id }),
-    });
-    assert.equal(book1.status, 201);
-    const book1Data = await book1.json();
+      // Member B books the 1st and only slot -> 201 Created
+      const book1 = await request('class-bookings', {
+        method: 'POST',
+        token: memberBToken,
+        body: JSON.stringify({ scheduleId: singleSched.id }),
+      });
+      assert.equal(book1.status, 201);
+      const book1Data = await book1.json();
 
-    // Member A attempts to book 2nd slot on full schedule -> 409 Conflict
-    const book2 = await request('class-bookings', {
-      method: 'POST',
-      token: memberAToken,
-      body: JSON.stringify({ scheduleId: singleSched.id }),
-    });
-    assert.equal(book2.status, 409);
+      // Member A attempts to book 2nd slot on full schedule -> 409 Conflict
+      const book2 = await request('class-bookings', {
+        method: 'POST',
+        token: memberAToken,
+        body: JSON.stringify({ scheduleId: singleSched.id }),
+      });
+      assert.equal(book2.status, 409);
 
-    // Clean up Member B's booking to refund quota
-    await request(`class-bookings/${book1Data.id}/cancel`, {
-      method: 'POST',
-      token: memberBToken,
-    });
-  });
+      // Clean up Member B's booking to refund quota
+      await request(`class-bookings/${book1Data.id}/cancel`, {
+        method: 'POST',
+        token: memberBToken,
+      });
+    },
+  );
 
   // ========================================================
   // Test 5: Cancellation Policy & Quota Refund
   // ========================================================
-  await t.test('POST /api/class-bookings/:id/cancel - Valid cancellation (> 2 hours) refunds quota', async () => {
-    const cancelRes = await request(`class-bookings/${memberABookingId}/cancel`, {
-      method: 'POST',
-      token: memberAToken,
-    });
-    assert.equal(cancelRes.status, 200);
-    const cancelled = await cancelRes.json();
-    assert.equal(cancelled.status, 'CANCELLED');
-    assert.ok(cancelled.cancelledAt);
+  await t.test(
+    'POST /api/class-bookings/:id/cancel - Valid cancellation (> 2 hours) refunds quota',
+    async () => {
+      const cancelRes = await request(
+        `class-bookings/${memberABookingId}/cancel`,
+        {
+          method: 'POST',
+          token: memberAToken,
+        },
+      );
+      assert.equal(cancelRes.status, 200);
+      const cancelled = await cancelRes.json();
+      assert.equal(cancelled.status, 'CANCELLED');
+      assert.ok(cancelled.cancelledAt);
 
-    // Verify Quota: reserved decremented back to 0
-    const quota = await db.client.subscriptionQuota.findFirst({
-      where: { subscriptionId: subA.id },
-    });
-    assert.equal(quota.reserved, 0);
+      // Verify Quota: reserved decremented back to 0
+      const quota = await db.client.subscriptionQuota.findFirst({
+        where: { subscriptionId: subA.id },
+      });
+      assert.equal(quota.reserved, 0);
 
-    // Verify QuotaTransaction (type: REFUND, reservedDelta: -1)
-    const refundTx = await db.client.quotaTransaction.findFirst({
-      where: {
-        quotaId: quota.id,
-        type: 'REFUND',
-      },
-      orderBy: { createdAt: 'desc' },
-    });
-    assert.ok(refundTx);
-    assert.equal(refundTx.reservedDelta, -1);
-  });
+      // Verify QuotaTransaction (type: REFUND, reservedDelta: -1)
+      const refundTx = await db.client.quotaTransaction.findFirst({
+        where: {
+          quotaId: quota.id,
+          type: 'REFUND',
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+      assert.ok(refundTx);
+      assert.equal(refundTx.reservedDelta, -1);
+    },
+  );
 
-  await t.test('POST /api/class-bookings/:id/cancel - Cutoff < 2 hours rejects Member self-cancellation', async () => {
-    // Create schedule starting in 1 hour
-    const nearStart = new Date(Date.now() + 60 * 60 * 1000); // 1 hour ahead
-    const nearEnd = new Date(nearStart.getTime() + 60 * 60 * 1000);
+  await t.test(
+    'POST /api/class-bookings/:id/cancel - Cutoff < 2 hours rejects Member self-cancellation',
+    async () => {
+      // Create schedule starting in 1 hour
+      const nearStart = new Date(Date.now() + 60 * 60 * 1000); // 1 hour ahead
+      const nearEnd = new Date(nearStart.getTime() + 60 * 60 * 1000);
 
-    const nearSchedRes = await request('class-schedules', {
-      method: 'POST',
-      token: staffToken,
-      body: JSON.stringify({
-        classId: gymClassId,
-        trainerId: coach.id,
-        startsAt: nearStart.toISOString(),
-        endsAt: nearEnd.toISOString(),
-        capacity: 10,
-      }),
-    });
-    assert.equal(nearSchedRes.status, 201);
-    const nearSched = await nearSchedRes.json();
+      const nearSchedRes = await request('class-schedules', {
+        method: 'POST',
+        token: staffToken,
+        body: JSON.stringify({
+          classId: gymClassId,
+          trainerId: coach.id,
+          startsAt: nearStart.toISOString(),
+          endsAt: nearEnd.toISOString(),
+          capacity: 10,
+        }),
+      });
+      assert.equal(nearSchedRes.status, 201);
+      const nearSched = await nearSchedRes.json();
 
-    // Member A books slot
-    const bookNearRes = await request('class-bookings', {
-      method: 'POST',
-      token: memberAToken,
-      body: JSON.stringify({ scheduleId: nearSched.id }),
-    });
-    assert.equal(bookNearRes.status, 201);
-    const nearBooking = await bookNearRes.json();
+      // Member A books slot
+      const bookNearRes = await request('class-bookings', {
+        method: 'POST',
+        token: memberAToken,
+        body: JSON.stringify({ scheduleId: nearSched.id }),
+      });
+      assert.equal(bookNearRes.status, 201);
+      const nearBooking = await bookNearRes.json();
 
-    // Member tries to cancel within 2 hours -> 400 Bad Request
-    const memberCutoffRes = await request(`class-bookings/${nearBooking.id}/cancel`, {
-      method: 'POST',
-      token: memberAToken,
-    });
-    assert.equal(memberCutoffRes.status, 400);
+      // Member tries to cancel within 2 hours -> 400 Bad Request
+      const memberCutoffRes = await request(
+        `class-bookings/${nearBooking.id}/cancel`,
+        {
+          method: 'POST',
+          token: memberAToken,
+        },
+      );
+      assert.equal(memberCutoffRes.status, 400);
 
-    // Staff cancels as management override -> 200 OK
-    const staffOverrideRes = await request(`class-bookings/${nearBooking.id}/cancel`, {
-      method: 'POST',
-      token: staffToken,
-    });
-    assert.equal(staffOverrideRes.status, 200);
-  });
+      // Staff cancels as management override -> 200 OK
+      const staffOverrideRes = await request(
+        `class-bookings/${nearBooking.id}/cancel`,
+        {
+          method: 'POST',
+          token: staffToken,
+        },
+      );
+      assert.equal(staffOverrideRes.status, 200);
+    },
+  );
 
   // ========================================================
   // Test 6: Attendance Tracking (PRESENT & ABSENT)
   // ========================================================
   let bookingForAttendanceId = '';
+  let bookingForAbsenceId = '';
 
-  await t.test('POST /api/class-bookings/:id/attendance - Mark PRESENT consumes quota', async () => {
-    // Rebook Member A for the original schedule
-    const rebookRes = await request('class-bookings', {
-      method: 'POST',
-      token: memberAToken,
-      body: JSON.stringify({ scheduleId }),
-    });
-    assert.equal(rebookRes.status, 201);
-    const rebooked = await rebookRes.json();
-    bookingForAttendanceId = rebooked.id;
+  await t.test(
+    'POST /api/class-bookings/:id/attendance - Mark PRESENT consumes quota',
+    async () => {
+      // Rebook Member A for the original schedule
+      const rebookRes = await request('class-bookings', {
+        method: 'POST',
+        token: memberAToken,
+        body: JSON.stringify({ scheduleId }),
+      });
+      assert.equal(rebookRes.status, 201);
+      const rebooked = await rebookRes.json();
+      bookingForAttendanceId = rebooked.id;
+      // Book both participants before advancing this fixture to the lesson time.
+      const absentBookingRes = await request('class-bookings', {
+        method: 'POST',
+        token: memberBToken,
+        body: JSON.stringify({ scheduleId }),
+      });
+      assert.equal(absentBookingRes.status, 201);
+      bookingForAbsenceId = (await absentBookingRes.json()).id;
+      await db.client.subscription.updateMany({
+        where: {
+          id: {
+            in: [
+              subA.id,
+              (
+                await db.client.classBooking.findUnique({
+                  where: { id: bookingForAbsenceId },
+                })
+              ).subscriptionId,
+            ],
+          },
+        },
+        data: { startDate: new Date(Date.now() - 86400000) },
+      });
+      await db.client.classSchedule.update({
+        where: { id: scheduleId },
+        data: {
+          startsAt: new Date(Date.now() - 3600000),
+          endsAt: new Date(Date.now() + 1800000),
+        },
+      });
 
-    // Member cannot take attendance -> 403 Forbidden
-    const memberAttAttempt = await request(`class-bookings/${bookingForAttendanceId}/attendance`, {
-      method: 'POST',
-      token: memberAToken,
-      body: JSON.stringify({ attendance: 'PRESENT' }),
-    });
-    assert.equal(memberAttAttempt.status, 403);
+      // Member cannot take attendance -> 403 Forbidden
+      const memberAttAttempt = await request(
+        `class-bookings/${bookingForAttendanceId}/attendance`,
+        {
+          method: 'POST',
+          token: memberAToken,
+          body: JSON.stringify({ attendance: 'PRESENT' }),
+        },
+      );
+      assert.equal(memberAttAttempt.status, 403);
 
-    // Coach marks attendance PRESENT -> 200 OK
-    const coachAttRes = await request(`class-bookings/${bookingForAttendanceId}/attendance`, {
-      method: 'POST',
-      token: coachToken,
-      body: JSON.stringify({ attendance: 'PRESENT' }),
-    });
-    assert.equal(coachAttRes.status, 200);
-    const attended = await coachAttRes.json();
-    assert.equal(attended.attendance, 'PRESENT');
-    assert.equal(attended.status, 'COMPLETED');
-    assert.ok(attended.attendedAt);
+      // Coach marks attendance PRESENT -> 200 OK
+      const coachAttRes = await request(
+        `class-bookings/${bookingForAttendanceId}/attendance`,
+        {
+          method: 'POST',
+          token: coachToken,
+          body: JSON.stringify({ attendance: 'PRESENT' }),
+        },
+      );
+      assert.equal(coachAttRes.status, 200);
+      const attended = await coachAttRes.json();
+      assert.equal(attended.attendance, 'PRESENT');
+      assert.equal(attended.status, 'COMPLETED');
+      assert.ok(attended.attendedAt);
 
-    // Verify Quota: reserved decremented by 1, used incremented to 1
-    const quota = await db.client.subscriptionQuota.findFirst({
-      where: { subscriptionId: subA.id },
-    });
-    assert.equal(quota.reserved, 0);
-    assert.equal(quota.used, 1);
+      // Verify Quota: reserved decremented by 1, used incremented to 1
+      const quota = await db.client.subscriptionQuota.findFirst({
+        where: { subscriptionId: subA.id },
+      });
+      assert.equal(quota.reserved, 0);
+      assert.equal(quota.used, 1);
 
-    // Verify QuotaTransaction (type: USE, reservedDelta: -1, usedDelta: 1)
-    const useTx = await db.client.quotaTransaction.findFirst({
-      where: {
-        quotaId: quota.id,
-        type: 'USE',
-      },
-      orderBy: { createdAt: 'desc' },
-    });
-    assert.ok(useTx);
-    assert.equal(useTx.reservedDelta, -1);
-    assert.equal(useTx.usedDelta, 1);
-  });
+      // Verify QuotaTransaction (type: USE, reservedDelta: -1, usedDelta: 1)
+      const useTx = await db.client.quotaTransaction.findFirst({
+        where: {
+          quotaId: quota.id,
+          type: 'USE',
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+      assert.ok(useTx);
+      assert.equal(useTx.reservedDelta, -1);
+      assert.equal(useTx.usedDelta, 1);
+    },
+  );
 
-  await t.test('POST /api/class-bookings/:id/attendance - Mark ABSENT forfeits quota as NO_SHOW', async () => {
-    // Member B books slot
-    const bookBRes = await request('class-bookings', {
-      method: 'POST',
-      token: memberBToken,
-      body: JSON.stringify({ scheduleId }),
-    });
-    assert.equal(bookBRes.status, 201);
-    const bookingB = await bookBRes.json();
+  await t.test(
+    'POST /api/class-bookings/:id/attendance - Mark ABSENT forfeits quota as NO_SHOW',
+    async () => {
+      const bookingB = await db.client.classBooking.findUnique({
+        where: { id: bookingForAbsenceId },
+      });
+      await db.client.classSchedule.update({
+        where: { id: scheduleId },
+        data: { endsAt: new Date(Date.now() - 1000) },
+      });
 
-    // Staff marks attendance ABSENT -> 200 OK
-    const absentRes = await request(`class-bookings/${bookingB.id}/attendance`, {
-      method: 'POST',
-      token: staffToken,
-      body: JSON.stringify({ attendance: 'ABSENT' }),
-    });
-    assert.equal(absentRes.status, 200);
-    const absentData = await absentRes.json();
-    assert.equal(absentData.attendance, 'ABSENT');
-    assert.equal(absentData.status, 'NO_SHOW');
+      // Staff marks attendance ABSENT -> 200 OK
+      const absentRes = await request(
+        `class-bookings/${bookingB.id}/attendance`,
+        {
+          method: 'POST',
+          token: staffToken,
+          body: JSON.stringify({ attendance: 'ABSENT' }),
+        },
+      );
+      assert.equal(absentRes.status, 200);
+      const absentData = await absentRes.json();
+      assert.equal(absentData.attendance, 'ABSENT');
+      assert.equal(absentData.status, 'NO_SHOW');
 
-    // Verify Quota: reserved decreases by 1, used increases by 1 (penalty)
-    const quotaB = await db.client.subscriptionQuota.findFirst({
-      where: { subscriptionId: bookingB.subscriptionId },
-    });
-    assert.equal(quotaB.reserved, 0);
-    assert.equal(quotaB.used, 1);
-  });
+      // Verify Quota: reserved decreases by 1, used increases by 1 (penalty)
+      const quotaB = await db.client.subscriptionQuota.findFirst({
+        where: { subscriptionId: bookingB.subscriptionId },
+      });
+      assert.equal(quotaB.reserved, 0);
+      assert.equal(quotaB.used, 1);
+    },
+  );
 
   // ========================================================
   // Test 7: Queries (findMyBookings & findBySchedule)
   // ========================================================
-  await t.test('GET /api/class-bookings/my & GET /api/class-schedules/:id/bookings', async () => {
-    // Member A views own bookings
-    const myRes = await request('class-bookings/my', {
-      method: 'GET',
-      token: memberAToken,
-    });
-    assert.equal(myRes.status, 200);
-    const myBookings = await myRes.json();
-    assert.ok(myBookings.data.length >= 1);
-    assert.ok(myBookings.meta.total >= 1);
+  await t.test(
+    'GET /api/class-bookings/my & GET /api/class-schedules/:id/bookings',
+    async () => {
+      // Member A views own bookings
+      const myRes = await request('class-bookings/my', {
+        method: 'GET',
+        token: memberAToken,
+      });
+      assert.equal(myRes.status, 200);
+      const myBookings = await myRes.json();
+      assert.ok(myBookings.data.length >= 1);
+      assert.ok(myBookings.meta.total >= 1);
 
-    // Coach views roster for schedule
-    const rosterRes = await request(`class-schedules/${scheduleId}/bookings`, {
-      method: 'GET',
-      token: coachToken,
-    });
-    assert.equal(rosterRes.status, 200);
-    const roster = await rosterRes.json();
-    assert.ok(Array.isArray(roster));
-    assert.ok(roster.length >= 1);
-  });
+      // Coach views roster for schedule
+      const rosterRes = await request(
+        `class-schedules/${scheduleId}/bookings`,
+        {
+          method: 'GET',
+          token: coachToken,
+        },
+      );
+      assert.equal(rosterRes.status, 200);
+      const roster = await rosterRes.json();
+      assert.ok(Array.isArray(roster));
+      assert.ok(roster.length >= 1);
+    },
+  );
 });

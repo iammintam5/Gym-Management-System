@@ -8,11 +8,13 @@ export enum UserRole {
 export interface AuthUser {
   id: string;
   roles: UserRole[];
+  sessionId?: string;
 }
 export interface AccessTokenClaims {
   sub: string;
   roles: UserRole[];
   type: 'access';
+  sid?: string;
   exp: number;
   iat?: number;
 }
@@ -20,6 +22,7 @@ export interface RefreshTokenClaims {
   sub: string;
   jti: string;
   type: 'refresh';
+  sid?: string;
   exp: number;
 }
 export interface LoginRequest {

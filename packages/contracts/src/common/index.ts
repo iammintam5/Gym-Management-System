@@ -25,6 +25,8 @@ export interface ApiErrorBody {
   statusCode: number;
   message: string | string[];
   error?: string;
+  code?: string;
+  conflicts?: import('../members').MemberFaceConflict[];
 }
 
 /** allocated=null means unlimited; never use a magic negative number. */
@@ -90,3 +92,33 @@ export interface AdjustQuotaRequest {
   allocatedDelta?: number;
   reason: string;
 }
+
+/**
+ * Single Source of Truth for Gym Domain Business Rules & Validation Boundaries
+ * Shared across @gym/api and @gym/web so Frontend never hardcodes or guesses limits.
+ */
+export const GYM_DOMAIN_RULES = {
+  CODES: {
+    MEMBER_PREFIX: 'MEM-',
+    EMPLOYEE_PREFIX: 'EMP-',
+    RECEIPT_PREFIX: 'REC-',
+  },
+  CHECKIN: {
+    ANTI_PASSBACK_MINUTES: 5,
+    ID_PHOTO_MAX_CHARS: 200_000,
+    MEMBER_CAN_SELF_EDIT_PHOTO: false,
+  },
+  SCHEDULING: {
+    CLASS_DURATION_MIN_MINUTES: 30,
+    CLASS_DURATION_MAX_MINUTES: 180,
+    CLASS_CANCEL_MIN_LEAD_HOURS: 2,
+    PT_CANCEL_MIN_LEAD_HOURS: 6,
+    OPERATING_START_HOUR: 6,
+    OPERATING_END_HOUR: 22,
+  },
+  FREEZE: {
+    MIN_DAYS: 7,
+    MAX_DAYS: 60,
+    MAX_FREEZES_PER_SUBSCRIPTION: 2,
+  },
+} as const;

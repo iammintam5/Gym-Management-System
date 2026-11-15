@@ -6,7 +6,16 @@ require('reflect-metadata');
 process.env.NODE_ENV = 'test';
 process.env.JWT_ACCESS_SECRET = randomBytes(48).toString('hex');
 process.env.JWT_REFRESH_SECRET = randomBytes(48).toString('hex');
-process.env.DATABASE_URL = 'postgresql://gym:gym@localhost:5432/gym_management';
+if (
+  !process.env.DATABASE_URL ||
+  !['127.0.0.1', 'localhost'].includes(
+    new URL(process.env.DATABASE_URL).hostname,
+  )
+) {
+  throw new Error(
+    'Run foundation tests through pnpm test:local with its temporary database',
+  );
+}
 process.env.WEB_ORIGIN = 'http://localhost:3000';
 
 const { NestFactory } = require('@nestjs/core');

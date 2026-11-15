@@ -10,15 +10,15 @@ import {
 export class ConfirmPaymentDto {
   @ApiProperty({
     description: 'Payment method applied',
-    enum: ['CASH', 'TRANSFER', 'CARD'],
+    enum: ['CASH', 'TRANSFER'],
     example: 'TRANSFER',
   })
-  @IsEnum(['CASH', 'TRANSFER', 'CARD'])
+  @IsEnum(['CASH', 'TRANSFER'])
   @IsNotEmpty()
-  method!: 'CASH' | 'TRANSFER' | 'CARD';
+  method!: 'CASH' | 'TRANSFER';
 
   @ApiPropertyOptional({
-    description: 'Bank transfer reference code or POS transaction authorization number',
+    description: 'Bank transfer reference code',
     example: 'FT260923888899',
   })
   @IsOptional()

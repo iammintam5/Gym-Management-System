@@ -1,6 +1,6 @@
 import { PaymentStatus } from '../common';
 
-export type PaymentMethod = 'CASH' | 'TRANSFER' | 'CARD';
+export type PaymentMethod = 'CASH' | 'TRANSFER';
 
 export interface PaymentRecordDetail {
   id: string;

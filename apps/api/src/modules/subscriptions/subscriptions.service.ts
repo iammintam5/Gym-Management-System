@@ -17,6 +17,12 @@ import {
   type SubscriptionPlanSummary,
   type SubscriptionQuotaSummary,
 } from '@gym/contracts';
+import { memberCodeRange } from '../common/member-code';
+import { lockScheduleWrites } from '../common/booking-access';
+import {
+  previousStaffRequest,
+  saveStaffRequest,
+} from '../common/staff-request';
 import { DatabaseService } from '../database/database.module';
 import { resolveEffectiveStatus } from './helpers/subscription-status.helper';
 import {
@@ -29,6 +35,7 @@ import type { QuerySubscriptionsDto } from './dto/query-subscriptions.dto';
 import type { RenewSubscriptionDto } from './dto/renew-subscription.dto';
 
 interface RawSubscriptionWithRelations {
+  _count?: { freezes: number };
   id: string;
   memberId: string;
   planId: string;
@@ -48,6 +55,8 @@ interface RawSubscriptionWithRelations {
     id: string;
     fullName: string;
     phone: string | null;
+    idPhotoUrl?: string | null;
+    dateOfBirth?: Date | null;
     user?: {
       email: string;
       isActive: boolean;
@@ -86,7 +95,36 @@ export class SubscriptionsService {
 
   constructor(private readonly db: DatabaseService) {}
 
-  private mapSubscriptionDetail(
+  private readonly subscriptionInclude = {
+    member: { include: { user: true } },
+    plan: true,
+    quotas: { include: { serviceType: true } },
+    payments: true,
+  } as const;
+
+  private async replayRequest(
+    key: string | undefined,
+    operation: string,
+    payload: Record<string, unknown>,
+  ): Promise<SubscriptionDetail | undefined> {
+    if (!key) return undefined;
+    const sub = await this.db.client.$transaction(async (tx) => {
+      const id = await previousStaffRequest(tx, key, operation, payload);
+      return id
+        ? tx.subscription.findUniqueOrThrow({
+            where: { id },
+            include: this.subscriptionInclude,
+          })
+        : undefined;
+    });
+    return sub
+      ? this.mapSubscriptionDetail(
+          sub as unknown as RawSubscriptionWithRelations,
+        )
+      : undefined;
+  }
+
+  mapSubscriptionDetail(
     sub: RawSubscriptionWithRelations,
     now = new Date(),
   ): SubscriptionDetail {
@@ -115,6 +153,10 @@ export class SubscriptionsService {
       fullName: sub.member.fullName,
       email: sub.member.user?.email,
       phone: sub.member.phone ?? null,
+      idPhotoUrl: sub.member.idPhotoUrl ?? null,
+      dateOfBirth: sub.member.dateOfBirth
+        ? sub.member.dateOfBirth.toISOString().slice(0, 10)
+        : null,
     };
 
     const planSummary: SubscriptionPlanSummary = {
@@ -148,6 +190,7 @@ export class SubscriptionsService {
     );
 
     return {
+      freezeCount: sub._count?.freezes,
       id: sub.id,
       memberId: sub.memberId,
       planId: sub.planId,
@@ -175,6 +218,21 @@ export class SubscriptionsService {
     dto: CreateSubscriptionDto,
     creatorUserId?: string,
   ): Promise<SubscriptionDetail> {
+    const request = { ...dto, creatorUserId: creatorUserId ?? null };
+    const replay = await this.replayRequest(
+      dto.idempotencyKey,
+      'CREATE_SUBSCRIPTION',
+      request,
+    );
+    if (replay) return replay;
+    if (
+      dto.paymentStatus &&
+      ![PaymentStatus.PAID, PaymentStatus.PENDING].includes(dto.paymentStatus)
+    ) {
+      throw new BadRequestException(
+        'Chỉ có thể tạo gói với thanh toán PENDING hoặc PAID.',
+      );
+    }
     // 1. Validate member existence and active account
     const member = await this.db.client.memberProfile.findUnique({
       where: { id: dto.memberId },
@@ -201,7 +259,9 @@ export class SubscriptionsService {
       },
     });
     if (!plan) {
-      throw new NotFoundException(`Membership plan with ID "${dto.planId}" not found`);
+      throw new NotFoundException(
+        `Membership plan with ID "${dto.planId}" not found`,
+      );
     }
     if (!plan.isActive) {
       throw new ConflictException(
@@ -214,11 +274,30 @@ export class SubscriptionsService {
 
     // 3. Concurrency-safe atomic transaction
     const createdSub = await this.db.client.$transaction(async (tx) => {
+      const previousId = await previousStaffRequest(
+        tx,
+        dto.idempotencyKey,
+        'CREATE_SUBSCRIPTION',
+        request,
+      );
+      if (previousId)
+        return tx.subscription.findUniqueOrThrow({
+          where: { id: previousId },
+          include: this.subscriptionInclude,
+        });
+      await tx.$queryRaw`SELECT id FROM member_profiles WHERE id = ${dto.memberId}::uuid FOR UPDATE`;
+
       // Find all active or upcoming non-cancelled subscriptions for this member
       const activeOrUpcomingSubs = await tx.subscription.findMany({
         where: {
           memberId: dto.memberId,
-          status: { in: [SubscriptionStatus.ACTIVE, SubscriptionStatus.UPCOMING] },
+          status: {
+            in: [
+              SubscriptionStatus.ACTIVE,
+              SubscriptionStatus.UPCOMING,
+              SubscriptionStatus.SUSPENDED,
+            ],
+          },
         },
         orderBy: { endDate: 'desc' },
       });
@@ -227,6 +306,16 @@ export class SubscriptionsService {
       const currentChainedSubs = activeOrUpcomingSubs.filter(
         (s) => resolveEffectiveStatus(s, now) !== SubscriptionStatus.EXPIRED,
       );
+
+      if (
+        currentChainedSubs.some(
+          (sub) => sub.status === SubscriptionStatus.SUSPENDED,
+        )
+      ) {
+        throw new ConflictException(
+          'Vui lòng kết thúc bảo lưu trước khi đăng ký gói nối tiếp.',
+        );
+      }
 
       let startDate: Date;
       let endDate: Date;
@@ -301,6 +390,13 @@ export class SubscriptionsService {
         },
       });
 
+      await saveStaffRequest(
+        tx,
+        dto.idempotencyKey,
+        'CREATE_SUBSCRIPTION',
+        request,
+        sub.id,
+      );
       return tx.subscription.findUniqueOrThrow({
         where: { id: sub.id },
         include: {
@@ -385,6 +481,9 @@ export class SubscriptionsService {
     if (search && search.trim()) {
       const trimmed = search.trim();
       where.OR = [
+        ...(memberCodeRange(trimmed)
+          ? [{ memberId: memberCodeRange(trimmed) }]
+          : []),
         {
           member: {
             fullName: { contains: trimmed, mode: 'insensitive' },
@@ -411,7 +510,29 @@ export class SubscriptionsService {
         take: limit,
         orderBy: { [sortBy]: sortOrder },
         include: {
-          member: { include: { user: true } },
+          _count: {
+            select: {
+              freezes: {
+                where: {
+                  status: { in: ['REQUESTED', 'APPROVED', 'COMPLETED'] },
+                },
+              },
+            },
+          },
+          member: {
+            select: {
+              id: true,
+              fullName: true,
+              phone: true,
+              dateOfBirth: true,
+              user: {
+                select: {
+                  email: true,
+                  isActive: true,
+                },
+              },
+            },
+          },
           plan: true,
           quotas: { include: { serviceType: true } },
           payments: true,
@@ -455,6 +576,7 @@ export class SubscriptionsService {
   async findMemberHistory(memberId: string): Promise<SubscriptionDetail[]> {
     const member = await this.db.client.memberProfile.findUnique({
       where: { id: memberId },
+      select: { id: true },
     });
     if (!member) {
       throw new NotFoundException(`Member with ID "${memberId}" not found`);
@@ -464,7 +586,20 @@ export class SubscriptionsService {
       where: { memberId },
       orderBy: { createdAt: 'desc' },
       include: {
-        member: { include: { user: true } },
+        member: {
+          select: {
+            id: true,
+            fullName: true,
+            phone: true,
+            dateOfBirth: true,
+            user: {
+              select: {
+                email: true,
+                isActive: true,
+              },
+            },
+          },
+        },
         plan: true,
         quotas: { include: { serviceType: true } },
         payments: true,
@@ -574,10 +709,7 @@ export class SubscriptionsService {
     return this.findCurrentForMember(profile.id);
   }
 
-  async activateNow(
-    id: string,
-    actorId?: string,
-  ): Promise<SubscriptionDetail> {
+  async activateNow(id: string, actorId?: string): Promise<SubscriptionDetail> {
     const sub = await this.db.client.subscription.findUnique({
       where: { id },
       include: {
@@ -734,6 +866,22 @@ export class SubscriptionsService {
     }
 
     const updated = await this.db.client.$transaction(async (tx) => {
+      await lockScheduleWrites(tx);
+      await tx.$queryRaw`SELECT id FROM member_profiles WHERE id = ${sub.memberId}::uuid FOR UPDATE`;
+      await tx.$queryRaw`SELECT id FROM subscriptions WHERE id = ${id}::uuid FOR UPDATE`;
+      const current = await tx.subscription.findUniqueOrThrow({
+        where: { id },
+      });
+      if (current.status === SubscriptionStatus.CANCELLED)
+        throw new ConflictException('Subscription is already cancelled');
+      await tx.subscriptionFreeze.updateMany({
+        where: {
+          subscriptionId: id,
+          status: { in: ['REQUESTED', 'APPROVED'] },
+          restoredAt: null,
+        },
+        data: { status: 'REJECTED', reason: 'Gói tập đã hủy' },
+      });
       // 1. Cancel future Class Bookings and refund quota reserved
       const futureClassBookings = await tx.classBooking.findMany({
         where: {
@@ -754,19 +902,21 @@ export class SubscriptionsService {
           },
         });
 
-        await tx.subscriptionQuota.update({
+        const quota = await tx.subscriptionQuota.findUniqueOrThrow({
           where: { id: booking.quotaId },
-          data: {
-            reserved: { decrement: 1 },
-          },
         });
+        if (quota.allocated !== null)
+          await tx.subscriptionQuota.update({
+            where: { id: booking.quotaId },
+            data: { reserved: { decrement: 1 } },
+          });
 
         await tx.quotaTransaction.create({
           data: {
             quotaId: booking.quotaId,
             subscriptionId: id,
             type: QuotaTransactionType.REFUND,
-            reservedDelta: -1,
+            reservedDelta: quota.allocated === null ? 0 : -1,
             idempotencyKey: `cancel-sub-${id}-class-${booking.id}`,
             referenceType: 'CLASS_BOOKING',
             referenceId: booking.id,
@@ -793,19 +943,21 @@ export class SubscriptionsService {
           },
         });
 
-        await tx.subscriptionQuota.update({
+        const quota = await tx.subscriptionQuota.findUniqueOrThrow({
           where: { id: booking.quotaId },
-          data: {
-            reserved: { decrement: 1 },
-          },
         });
+        if (quota.allocated !== null)
+          await tx.subscriptionQuota.update({
+            where: { id: booking.quotaId },
+            data: { reserved: { decrement: 1 } },
+          });
 
         await tx.quotaTransaction.create({
           data: {
             quotaId: booking.quotaId,
             subscriptionId: id,
             type: QuotaTransactionType.REFUND,
-            reservedDelta: -1,
+            reservedDelta: quota.allocated === null ? 0 : -1,
             idempotencyKey: `cancel-sub-${id}-pt-${booking.id}`,
             referenceType: 'PT_BOOKING',
             referenceId: booking.id,
@@ -843,6 +995,25 @@ export class SubscriptionsService {
     dto: RenewSubscriptionDto,
     creatorUserId?: string,
   ): Promise<SubscriptionDetail> {
+    const request = {
+      ...dto,
+      sourceSubscriptionId,
+      creatorUserId: creatorUserId ?? null,
+    };
+    const replay = await this.replayRequest(
+      dto.idempotencyKey,
+      'RENEW_SUBSCRIPTION',
+      request,
+    );
+    if (replay) return replay;
+    if (
+      dto.paymentStatus &&
+      ![PaymentStatus.PAID, PaymentStatus.PENDING].includes(dto.paymentStatus)
+    ) {
+      throw new BadRequestException(
+        'Chỉ có thể gia hạn với thanh toán PENDING hoặc PAID.',
+      );
+    }
     // 1. Validate source subscription existence and active user account
     const sourceSub = await this.db.client.subscription.findUnique({
       where: { id: sourceSubscriptionId },
@@ -877,15 +1048,6 @@ export class SubscriptionsService {
       throw new ConflictException('Cannot renew an upcoming subscription');
     }
 
-    if (
-      sourceSub.nextSubscription &&
-      sourceSub.nextSubscription.status !== SubscriptionStatus.CANCELLED
-    ) {
-      throw new ConflictException(
-        'Subscription has already been renewed or superseded in the chain',
-      );
-    }
-
     // 2. Resolve target plan (if planId omitted, reuse sourceSub.planId)
     const targetPlanId = dto.planId ?? sourceSub.planId;
     const targetPlan = await this.db.client.membershipPlan.findUnique({
@@ -917,6 +1079,40 @@ export class SubscriptionsService {
     // 3. Concurrency-safe atomic transaction
     try {
       const renewedSub = await this.db.client.$transaction(async (tx) => {
+        const previousId = await previousStaffRequest(
+          tx,
+          dto.idempotencyKey,
+          'RENEW_SUBSCRIPTION',
+          request,
+        );
+        if (previousId)
+          return tx.subscription.findUniqueOrThrow({
+            where: { id: previousId },
+            include: this.subscriptionInclude,
+          });
+        await tx.$queryRaw`SELECT id FROM member_profiles WHERE id = ${sourceSub.memberId}::uuid FOR UPDATE`;
+        const current = await tx.subscription.findUniqueOrThrow({
+          where: { id: sourceSubscriptionId },
+          include: { nextSubscription: true },
+        });
+        if (
+          current.status === SubscriptionStatus.CANCELLED ||
+          current.status === SubscriptionStatus.SUSPENDED ||
+          current.status === SubscriptionStatus.UPCOMING
+        ) {
+          throw new ConflictException(
+            'Trạng thái gói đã thay đổi. Vui lòng tải lại hồ sơ.',
+          );
+        }
+        if (
+          current.nextSubscription &&
+          current.nextSubscription.status !== SubscriptionStatus.CANCELLED
+        ) {
+          throw new ConflictException(
+            'Subscription has already been renewed or superseded in the chain',
+          );
+        }
+
         // If previous renewal was cancelled, unlink its previousSubscriptionId so unique constraint passes
         if (
           sourceSub.nextSubscription &&
@@ -1038,6 +1234,13 @@ export class SubscriptionsService {
           },
         });
 
+        await saveStaffRequest(
+          tx,
+          dto.idempotencyKey,
+          'RENEW_SUBSCRIPTION',
+          request,
+          newSub.id,
+        );
         return tx.subscription.findUniqueOrThrow({
           where: { id: newSub.id },
           include: {

@@ -30,6 +30,8 @@ export class AuthService {
   private async generateTokens(
     userId: string,
     roles: UserRole[],
+    sessionId: string = randomUUID(),
+    previousHash?: string,
   ): Promise<TokenPair> {
     const accessSecret = this.config.getOrThrow<string>('JWT_ACCESS_SECRET');
     const refreshSecret = this.config.getOrThrow<string>('JWT_REFRESH_SECRET');
@@ -46,6 +48,7 @@ export class AuthService {
       sub: userId,
       roles,
       type: 'access',
+      sid: sessionId,
     };
 
     const jti = randomUUID();
@@ -53,6 +56,7 @@ export class AuthService {
       sub: userId,
       jti,
       type: 'refresh',
+      sid: sessionId,
     };
 
     const [accessToken, refreshToken] = await Promise.all([
@@ -72,11 +76,47 @@ export class AuthService {
       }),
     ]);
 
-    const refreshTokenHash = await bcrypt.hash(hashToken(refreshToken), 10);
-    await this.db.client.user.update({
-      where: { id: userId },
-      data: { refreshTokenHash },
-    });
+    const decoded = this.jwt.decode<RefreshTokenClaims>(refreshToken);
+    const tokenHash = hashToken(refreshToken);
+    if (previousHash) {
+      const changed = await this.db.client.authSession.updateMany({
+        where: {
+          id: sessionId,
+          userId,
+          tokenHash: previousHash,
+          expiresAt: { gt: new Date() },
+        },
+        data: { tokenHash, expiresAt: new Date(decoded.exp * 1000) },
+      });
+      if (changed.count !== 1)
+        throw new UnauthorizedException(
+          'Refresh token has already been rotated or revoked',
+        );
+    } else {
+      await this.db.client.$transaction(async (tx) => {
+        await tx.authSession.deleteMany({
+          where: { userId, expiresAt: { lte: new Date() } },
+        });
+        // Bound simultaneous sessions while preserving separate phone and desk logins.
+        const sessions = await tx.authSession.findMany({
+          where: { userId },
+          orderBy: { expiresAt: 'desc' },
+          skip: 9,
+        });
+        if (sessions.length)
+          await tx.authSession.deleteMany({
+            where: { id: { in: sessions.map((session) => session.id) } },
+          });
+        await tx.authSession.create({
+          data: {
+            id: sessionId,
+            userId,
+            tokenHash,
+            expiresAt: new Date(decoded.exp * 1000),
+          },
+        });
+      });
+    }
 
     return { accessToken, refreshToken };
   }
@@ -90,8 +130,18 @@ export class AuthService {
             role: true,
           },
         },
-        memberProfile: true,
-        employeeProfile: true,
+        memberProfile: {
+          select: {
+            fullName: true,
+            phone: true,
+          },
+        },
+        employeeProfile: {
+          select: {
+            fullName: true,
+            phone: true,
+          },
+        },
       },
     });
 
@@ -172,6 +222,21 @@ export class AuthService {
       throw new UnauthorizedException('User not found or inactive');
     }
 
+    const roles = user.roles.map((r) => r.role.code as UserRole);
+    if (typeof payload.sid === 'string') {
+      const session = await this.db.client.authSession.findUnique({
+        where: { id: payload.sid },
+      });
+      if (
+        !session ||
+        session.userId !== user.id ||
+        session.expiresAt <= new Date() ||
+        session.tokenHash !== hashToken(refreshTokenDto.refreshToken)
+      )
+        throw new UnauthorizedException('Refresh token has been revoked');
+      return this.generateTokens(user.id, roles, session.id, session.tokenHash);
+    }
+    // Existing sessions can migrate once; consume the legacy hash atomically.
     if (!user.refreshTokenHash) {
       throw new UnauthorizedException('Refresh token has been revoked');
     }
@@ -186,15 +251,28 @@ export class AuthService {
     }
 
     // Token rotation: Issue new token pair and replace stored hash
-    const roles = user.roles.map((r) => r.role.code as UserRole);
+    const consumed = await this.db.client.user.updateMany({
+      where: { id: user.id, refreshTokenHash: user.refreshTokenHash },
+      data: { refreshTokenHash: null },
+    });
+    if (consumed.count !== 1)
+      throw new UnauthorizedException('Refresh token has already been used');
     return this.generateTokens(user.id, roles);
   }
 
-  async logout(userId: string): Promise<{ success: boolean; message: string }> {
-    await this.db.client.user.update({
-      where: { id: userId },
-      data: { refreshTokenHash: null },
-    });
+  async logout(
+    userId: string,
+    sessionId?: string,
+  ): Promise<{ success: boolean; message: string }> {
+    if (sessionId)
+      await this.db.client.authSession.deleteMany({
+        where: { userId, id: sessionId },
+      });
+    if (!sessionId)
+      await this.db.client.user.update({
+        where: { id: userId },
+        data: { refreshTokenHash: null },
+      });
 
     return {
       success: true,
@@ -211,8 +289,18 @@ export class AuthService {
             role: true,
           },
         },
-        memberProfile: true,
-        employeeProfile: true,
+        memberProfile: {
+          select: {
+            fullName: true,
+            phone: true,
+          },
+        },
+        employeeProfile: {
+          select: {
+            fullName: true,
+            phone: true,
+          },
+        },
       },
     });
 

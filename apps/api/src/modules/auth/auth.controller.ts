@@ -75,7 +75,7 @@ export class AuthController {
   async logout(
     @CurrentUser() user: AuthUser,
   ): Promise<{ success: boolean; message: string }> {
-    return this.authService.logout(user.id);
+    return this.authService.logout(user.id, user.sessionId);
   }
 
   @Get('me')

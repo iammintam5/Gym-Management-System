@@ -33,11 +33,12 @@ export class JobsService {
   }
 
   /**
-   * Daily 00:05 AM - Auto-complete freezes that have reached endsAt, extending endDate and reactivating subscription
+   * Every minute - Activate due freezes and restore completed freeze periods
    */
-  @Cron('5 0 * * *')
-  async handleNightlyFreezeAutoRestore(): Promise<void> {
-    this.logger.log('Starting nightly freeze auto-restoration...');
+  @Cron('0 * * * * *')
+  async handleFreezeTransitions(): Promise<void> {
+    this.logger.log('Checking scheduled freeze transitions...');
+    await this.freezesService.activateDueFreezes();
     const result = await this.runFreezeAutoRestore();
     this.logger.log(
       `Completed freeze auto-restoration: ${result.restored} subscriptions restored to ACTIVE`,
@@ -101,9 +102,7 @@ export class JobsService {
   /**
    * Programmatically invocable freeze auto-restoration (used by cron and integration tests)
    */
-  async runFreezeAutoRestore(
-    targetNow?: Date,
-  ): Promise<{ restored: number }> {
+  async runFreezeAutoRestore(targetNow?: Date): Promise<{ restored: number }> {
     const now = targetNow ? new Date(targetNow) : new Date();
 
     const dueFreezes = await this.db.client.subscriptionFreeze.findMany({
@@ -111,6 +110,7 @@ export class JobsService {
         status: 'APPROVED',
         endsAt: { lte: now },
         restoredAt: null,
+        subscription: { status: { not: SubscriptionStatus.CANCELLED } },
       },
       include: {
         subscription: {
@@ -126,14 +126,14 @@ export class JobsService {
 
     for (const freeze of dueFreezes) {
       try {
-        await this.freezesService.unfreeze(freeze.id, SYSTEM_ACTOR);
+        await this.freezesService.unfreeze(freeze.id, SYSTEM_ACTOR, now);
 
         // Notify member of auto-restoration
         if (freeze.subscription?.member) {
           await this.notificationsService.createNotification(
             freeze.subscription.member.userId,
             'Bảo lưu gói tập đã kết thúc',
-            `Thời gian bảo lưu gói tập ${freeze.subscription.plan.name} của bạn đã kết thúc. Gói tập đã được tự động mở lại và thời hạn tập được gia hạn thêm ${freeze.freezeDays} ngày.`,
+            `Thời gian bảo lưu gói tập ${freeze.subscription.plan.name} của bạn đã kết thúc. Gói tập đã được tự động mở lại và thời hạn tập được cộng bù theo thời gian bảo lưu thực tế.`,
             {
               subscriptionId: freeze.subscriptionId,
               freezeId: freeze.id,

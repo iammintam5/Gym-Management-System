@@ -49,20 +49,32 @@ export class MembersController {
   @ApiConflictResponse({ description: 'Email or phone already in use' })
   @ApiForbiddenResponse({ description: 'Forbidden (Admin/Staff only)' })
   @ApiUnauthorizedResponse({ description: 'Unauthorized' })
-  async create(@Body() dto: CreateMemberDto): Promise<MemberDetail> {
-    return this.membersService.create(dto);
+  async create(
+    @Body() dto: CreateMemberDto,
+    @CurrentUser() user: AuthUser,
+  ): Promise<MemberDetail> {
+    return this.membersService.create(dto, user.id);
   }
 
   @Get()
   @Roles(UserRole.ADMIN, UserRole.STAFF)
   @ApiOperation({
-    summary: 'List members with pagination, search, filter and sorting (Admin & Staff only)',
+    summary:
+      'List members with pagination, search, filter and sorting (Admin & Staff only)',
   })
   @ApiOkResponse({ description: 'Paginated list of members' })
   @ApiForbiddenResponse({ description: 'Forbidden (Admin/Staff only)' })
   @ApiUnauthorizedResponse({ description: 'Unauthorized' })
-  async findAll(@Query() query: QueryMembersDto): Promise<PaginatedMembersResponse> {
+  async findAll(
+    @Query() query: QueryMembersDto,
+  ): Promise<PaginatedMembersResponse> {
     return this.membersService.findAll(query);
+  }
+
+  @Get('directory')
+  @Roles(UserRole.ADMIN, UserRole.STAFF)
+  directory(@Query() query: QueryMembersDto) {
+    return this.membersService.directory(query);
   }
 
   @Get('me')
@@ -71,7 +83,9 @@ export class MembersController {
     summary: 'Get current member profile (Member self-service)',
   })
   @ApiOkResponse({ description: 'Current member profile' })
-  @ApiNotFoundResponse({ description: 'Member profile not found for current user' })
+  @ApiNotFoundResponse({
+    description: 'Member profile not found for current user',
+  })
   @ApiForbiddenResponse({ description: 'Forbidden (Member only)' })
   @ApiUnauthorizedResponse({ description: 'Unauthorized' })
   async findMe(@CurrentUser() currentUser: AuthUser): Promise<MemberDetail> {
@@ -82,7 +96,8 @@ export class MembersController {
   @Roles(UserRole.MEMBER)
   @ApiOperation({
     summary: 'Update current member profile (Member self-service)',
-    description: 'Allows member to update only allowed profile fields (fullName, phone, dateOfBirth).',
+    description:
+      'Allows member to update only allowed profile fields (fullName, phone, dateOfBirth).',
   })
   @ApiOkResponse({ description: 'Member profile successfully updated' })
   @ApiForbiddenResponse({ description: 'Forbidden (Member only)' })
@@ -103,7 +118,9 @@ export class MembersController {
   @ApiNotFoundResponse({ description: 'Member not found' })
   @ApiForbiddenResponse({ description: 'Forbidden (Admin/Staff only)' })
   @ApiUnauthorizedResponse({ description: 'Unauthorized' })
-  async findByCode(@Param('memberCode') memberCode: string): Promise<MemberDetail> {
+  async findByCode(
+    @Param('memberCode') memberCode: string,
+  ): Promise<MemberDetail> {
     return this.membersService.findByMemberCode(memberCode);
   }
 
@@ -116,7 +133,9 @@ export class MembersController {
   @ApiNotFoundResponse({ description: 'Member not found' })
   @ApiForbiddenResponse({ description: 'Forbidden (Admin/Staff only)' })
   @ApiUnauthorizedResponse({ description: 'Unauthorized' })
-  async findById(@Param('id', ParseUUIDPipe) id: string): Promise<MemberDetail> {
+  async findById(
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Promise<MemberDetail> {
     return this.membersService.findById(id);
   }
 
@@ -133,7 +152,8 @@ export class MembersController {
   async update(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateMemberDto,
+    @CurrentUser() user: AuthUser,
   ): Promise<MemberDetail> {
-    return this.membersService.update(id, dto);
+    return this.membersService.update(id, dto, user.id);
   }
 }

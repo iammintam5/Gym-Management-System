@@ -144,379 +144,451 @@ test('Phase 8 - Subscription Renewal Integration Tests', async (t) => {
   let renewedSubId = '';
 
   // 1. RBAC on Renewal Endpoint
-  await t.test('POST /api/subscriptions/:id/renew - RBAC enforcement', async () => {
-    // First create a baseline subscription for testing
-    const createSubRes = await request('subscriptions', {
-      method: 'POST',
-      token: staffToken,
-      body: JSON.stringify({
-        memberId: testMemberId,
-        planId: basicPlan.id,
-        paymentMethod: 'CASH',
-      }),
-    });
-    assert.equal(createSubRes.status, 201);
-    const sub = await createSubRes.json();
-    activeSubId = sub.id;
+  await t.test(
+    'POST /api/subscriptions/:id/renew - RBAC enforcement',
+    async () => {
+      // First create a baseline subscription for testing
+      const createSubRes = await request('subscriptions', {
+        method: 'POST',
+        token: staffToken,
+        body: JSON.stringify({
+          memberId: testMemberId,
+          planId: basicPlan.id,
+          paymentMethod: 'CASH',
+        }),
+      });
+      assert.equal(createSubRes.status, 201);
+      const sub = await createSubRes.json();
+      activeSubId = sub.id;
 
-    // PT Forbidden
-    const ptRenewRes = await request(`subscriptions/${activeSubId}/renew`, {
-      method: 'POST',
-      token: ptToken,
-      body: JSON.stringify({}),
-    });
-    assert.equal(ptRenewRes.status, 403);
+      // PT Forbidden
+      const ptRenewRes = await request(`subscriptions/${activeSubId}/renew`, {
+        method: 'POST',
+        token: ptToken,
+        body: JSON.stringify({}),
+      });
+      assert.equal(ptRenewRes.status, 403);
 
-    // Member Forbidden
-    const memberRenewRes = await request(`subscriptions/${activeSubId}/renew`, {
-      method: 'POST',
-      token: memberToken,
-      body: JSON.stringify({}),
-    });
-    assert.equal(memberRenewRes.status, 403);
+      // Member Forbidden
+      const memberRenewRes = await request(
+        `subscriptions/${activeSubId}/renew`,
+        {
+          method: 'POST',
+          token: memberToken,
+          body: JSON.stringify({}),
+        },
+      );
+      assert.equal(memberRenewRes.status, 403);
 
-    // Unauthenticated Unauthorized
-    const unauthRenewRes = await request(`subscriptions/${activeSubId}/renew`, {
-      method: 'POST',
-      body: JSON.stringify({}),
-    });
-    assert.equal(unauthRenewRes.status, 401);
-  });
+      // Unauthenticated Unauthorized
+      const unauthRenewRes = await request(
+        `subscriptions/${activeSubId}/renew`,
+        {
+          method: 'POST',
+          body: JSON.stringify({}),
+        },
+      );
+      assert.equal(unauthRenewRes.status, 401);
+    },
+  );
 
   // 2. Renew Active Subscription (Same Plan, Omit planId)
-  await t.test('POST /api/subscriptions/:id/renew - Active subscription renewal (Same Plan, Queued UPCOMING)', async () => {
-    const res = await request(`subscriptions/${activeSubId}/renew`, {
-      method: 'POST',
-      token: staffToken,
-      body: JSON.stringify({
-        paymentMethod: 'TRANSFER',
-        note: 'Renewed for 1 additional month',
-      }),
-    });
+  await t.test(
+    'POST /api/subscriptions/:id/renew - Active subscription renewal (Same Plan, Queued UPCOMING)',
+    async () => {
+      const res = await request(`subscriptions/${activeSubId}/renew`, {
+        method: 'POST',
+        token: staffToken,
+        body: JSON.stringify({
+          paymentMethod: 'TRANSFER',
+          note: 'Renewed for 1 additional month',
+        }),
+      });
 
-    assert.equal(res.status, 201);
-    const data = await res.json();
-    assert.ok(data.id);
-    renewedSubId = data.id;
+      assert.equal(res.status, 201);
+      const data = await res.json();
+      assert.ok(data.id);
+      renewedSubId = data.id;
 
-    // Check relationship and queued status
-    assert.equal(data.previousSubscriptionId, activeSubId);
-    assert.equal(data.memberId, testMemberId);
-    assert.equal(data.planId, basicPlan.id);
-    assert.equal(data.storedStatus, 'UPCOMING');
-    assert.equal(data.effectiveStatus, 'UPCOMING');
-    assert.equal(data.agreedPrice, 500000);
-    assert.equal(data.activatedAt, null);
+      // Check relationship and queued status
+      assert.equal(data.previousSubscriptionId, activeSubId);
+      assert.equal(data.memberId, testMemberId);
+      assert.equal(data.planId, basicPlan.id);
+      assert.equal(data.storedStatus, 'UPCOMING');
+      assert.equal(data.effectiveStatus, 'UPCOMING');
+      assert.equal(data.agreedPrice, 500000);
+      assert.equal(data.activatedAt, null);
 
-    // Date calculations: starts exactly when active subscription ends
-    const oldSubRes = await request(`subscriptions/${activeSubId}`, { token: adminToken });
-    const oldSub = await oldSubRes.json();
-    assert.equal(data.startDate, oldSub.endDate);
+      // Date calculations: starts exactly when active subscription ends
+      const oldSubRes = await request(`subscriptions/${activeSubId}`, {
+        token: adminToken,
+      });
+      const oldSub = await oldSubRes.json();
+      assert.equal(data.startDate, oldSub.endDate);
 
-    // Quotas: fresh snapshot, used=0, reserved=0
-    assert.ok(Array.isArray(data.quotas));
-    assert.equal(data.quotas.length, 2);
-    const classQuota = data.quotas.find((q) => q.service === 'CLASS');
-    assert.ok(classQuota);
-    assert.equal(classQuota.allocated, 5);
-    assert.equal(classQuota.used, 0);
-    assert.equal(classQuota.reserved, 0);
+      // Quotas: fresh snapshot, used=0, reserved=0
+      assert.ok(Array.isArray(data.quotas));
+      assert.equal(data.quotas.length, 2);
+      const classQuota = data.quotas.find((q) => q.service === 'CLASS');
+      assert.ok(classQuota);
+      assert.equal(classQuota.allocated, 5);
+      assert.equal(classQuota.used, 0);
+      assert.equal(classQuota.reserved, 0);
 
-    // Payment record created
-    assert.ok(Array.isArray(data.payments));
-    assert.equal(data.payments.length, 1);
-    assert.equal(data.payments[0].amount, 500000);
-    assert.equal(data.payments[0].status, 'PAID');
-    assert.equal(data.payments[0].method, 'TRANSFER');
+      // Payment record created
+      assert.ok(Array.isArray(data.payments));
+      assert.equal(data.payments.length, 1);
+      assert.equal(data.payments[0].amount, 500000);
+      assert.equal(data.payments[0].status, 'PAID');
+      assert.equal(data.payments[0].method, 'TRANSFER');
 
-    // Verify old subscription is completely untouched (immutability)
-    assert.equal(oldSub.id, activeSubId);
-    assert.equal(oldSub.storedStatus, 'ACTIVE');
-    assert.equal(oldSub.planId, basicPlan.id);
-    assert.equal(oldSub.agreedPrice, 500000);
-  });
+      // Verify old subscription is completely untouched (immutability)
+      assert.equal(oldSub.id, activeSubId);
+      assert.equal(oldSub.storedStatus, 'ACTIVE');
+      assert.equal(oldSub.planId, basicPlan.id);
+      assert.equal(oldSub.agreedPrice, 500000);
+    },
+  );
 
   // 3. Reject duplicate renewal when UPCOMING renewal already exists
-  await t.test('POST /api/subscriptions/:id/renew - Reject if UPCOMING renewal already exists', async () => {
-    const res = await request(`subscriptions/${activeSubId}/renew`, {
-      method: 'POST',
-      token: adminToken,
-      body: JSON.stringify({}),
-    });
-    assert.equal(res.status, 409);
-    const err = await res.json();
-    assert.ok(
-      err.message.includes('upcoming subscription renewal queued') ||
-        err.message.includes('chain') ||
-        err.message.includes('superseded'),
-    );
-  });
+  await t.test(
+    'POST /api/subscriptions/:id/renew - Reject if UPCOMING renewal already exists',
+    async () => {
+      const res = await request(`subscriptions/${activeSubId}/renew`, {
+        method: 'POST',
+        token: adminToken,
+        body: JSON.stringify({}),
+      });
+      assert.equal(res.status, 409);
+      const err = await res.json();
+      assert.ok(
+        err.message.includes('upcoming subscription renewal queued') ||
+          err.message.includes('chain') ||
+          err.message.includes('superseded'),
+      );
+    },
+  );
 
   // 4. Reject renewal from older subscription in chain
-  await t.test('POST /api/subscriptions/:id/renew - Reject renewing non-latest subscription', async () => {
-    // Attempting to renew activeSubId when renewedSubId exists
-    const res = await request(`subscriptions/${activeSubId}/renew`, {
-      method: 'POST',
-      token: staffToken,
-      body: JSON.stringify({}),
-    });
-    assert.equal(res.status, 409);
-  });
+  await t.test(
+    'POST /api/subscriptions/:id/renew - Reject renewing non-latest subscription',
+    async () => {
+      // Attempting to renew activeSubId when renewedSubId exists
+      const res = await request(`subscriptions/${activeSubId}/renew`, {
+        method: 'POST',
+        token: staffToken,
+        body: JSON.stringify({}),
+      });
+      assert.equal(res.status, 409);
+    },
+  );
 
   // 5. Reject renewing an UPCOMING subscription directly
-  await t.test('POST /api/subscriptions/:id/renew - Reject renewing UPCOMING source', async () => {
-    const res = await request(`subscriptions/${renewedSubId}/renew`, {
-      method: 'POST',
-      token: staffToken,
-      body: JSON.stringify({}),
-    });
-    assert.equal(res.status, 409);
-    const err = await res.json();
-    assert.ok(err.message.includes('Cannot renew an upcoming subscription'));
-  });
+  await t.test(
+    'POST /api/subscriptions/:id/renew - Reject renewing UPCOMING source',
+    async () => {
+      const res = await request(`subscriptions/${renewedSubId}/renew`, {
+        method: 'POST',
+        token: staffToken,
+        body: JSON.stringify({}),
+      });
+      assert.equal(res.status, 409);
+      const err = await res.json();
+      assert.ok(err.message.includes('Cannot renew an upcoming subscription'));
+    },
+  );
 
   // 6. Renew with different plan (Upgrade from Basic to Premium)
-  await t.test('POST /api/subscriptions/:id/renew - Renew with different plan (Price & Quota snapshot)', async () => {
-    // Create new member with an active Basic subscription
-    const upgradeMemberRes = await request('members', {
-      method: 'POST',
-      token: adminToken,
-      body: JSON.stringify({
-        email: `upgrade.member.${Date.now()}@test.com`,
-        fullName: 'Upgrade Test Member',
-        phone: `094${Date.now().toString().slice(-7)}`,
-      }),
-    });
-    assert.equal(upgradeMemberRes.status, 201);
-    const upgradeMember = await upgradeMemberRes.json();
+  await t.test(
+    'POST /api/subscriptions/:id/renew - Renew with different plan (Price & Quota snapshot)',
+    async () => {
+      // Create new member with an active Basic subscription
+      const upgradeMemberRes = await request('members', {
+        method: 'POST',
+        token: adminToken,
+        body: JSON.stringify({
+          email: `upgrade.member.${Date.now()}@test.com`,
+          fullName: 'Upgrade Test Member',
+          phone: `094${Date.now().toString().slice(-7)}`,
+        }),
+      });
+      assert.equal(upgradeMemberRes.status, 201);
+      const upgradeMember = await upgradeMemberRes.json();
 
-    const basicSubRes = await request('subscriptions', {
-      method: 'POST',
-      token: staffToken,
-      body: JSON.stringify({
-        memberId: upgradeMember.id,
-        planId: basicPlan.id,
-        paymentMethod: 'CASH',
-      }),
-    });
-    assert.equal(basicSubRes.status, 201);
-    const initialBasicSub = await basicSubRes.json();
+      const basicSubRes = await request('subscriptions', {
+        method: 'POST',
+        token: staffToken,
+        body: JSON.stringify({
+          memberId: upgradeMember.id,
+          planId: basicPlan.id,
+          paymentMethod: 'CASH',
+        }),
+      });
+      assert.equal(basicSubRes.status, 201);
+      const initialBasicSub = await basicSubRes.json();
 
-    // Renew to Premium Plan
-    const renewPremiumRes = await request(`subscriptions/${initialBasicSub.id}/renew`, {
-      method: 'POST',
-      token: staffToken,
-      body: JSON.stringify({
-        planId: premiumPlan.id,
-        paymentMethod: 'CARD',
-      }),
-    });
-    assert.equal(renewPremiumRes.status, 201);
-    const premiumSub = await renewPremiumRes.json();
+      const cardRejected = await request(
+        `subscriptions/${initialBasicSub.id}/renew`,
+        {
+          method: 'POST',
+          token: staffToken,
+          body: JSON.stringify({
+            planId: premiumPlan.id,
+            paymentMethod: 'CARD',
+          }),
+        },
+      );
+      assert.equal(cardRejected.status, 400);
 
-    assert.equal(premiumSub.planId, premiumPlan.id);
-    assert.equal(premiumSub.agreedPrice, 1200000);
-    assert.equal(premiumSub.previousSubscriptionId, initialBasicSub.id);
-    assert.equal(premiumSub.storedStatus, 'UPCOMING');
+      // Renew to Premium Plan
+      const renewPremiumRes = await request(
+        `subscriptions/${initialBasicSub.id}/renew`,
+        {
+          method: 'POST',
+          token: staffToken,
+          body: JSON.stringify({
+            planId: premiumPlan.id,
+            paymentMethod: 'TRANSFER',
+          }),
+        },
+      );
+      assert.equal(renewPremiumRes.status, 201);
+      const premiumSub = await renewPremiumRes.json();
 
-    // Verify Premium quotas (3 entitlements) with fresh reset
-    assert.equal(premiumSub.quotas.length, 3);
-    const ptQuota = premiumSub.quotas.find((q) => q.service === 'PT');
-    assert.ok(ptQuota);
-    assert.equal(ptQuota.allocated, 5);
-    assert.equal(ptQuota.used, 0);
-    assert.equal(ptQuota.reserved, 0);
+      assert.equal(premiumSub.planId, premiumPlan.id);
+      assert.equal(premiumSub.agreedPrice, 1200000);
+      assert.equal(premiumSub.previousSubscriptionId, initialBasicSub.id);
+      assert.equal(premiumSub.storedStatus, 'UPCOMING');
 
-    const classQuota = premiumSub.quotas.find((q) => q.service === 'CLASS');
-    assert.ok(classQuota);
-    assert.equal(classQuota.allocated, 20);
-    assert.equal(classQuota.used, 0);
+      // Verify Premium quotas (3 entitlements) with fresh reset
+      assert.equal(premiumSub.quotas.length, 3);
+      const ptQuota = premiumSub.quotas.find((q) => q.service === 'PT');
+      assert.ok(ptQuota);
+      assert.equal(ptQuota.allocated, 5);
+      assert.equal(ptQuota.used, 0);
+      assert.equal(ptQuota.reserved, 0);
 
-    // Verify initial Basic sub unchanged
-    const basicSubCheck = await (
-      await request(`subscriptions/${initialBasicSub.id}`, { token: adminToken })
-    ).json();
-    assert.equal(basicSubCheck.agreedPrice, 500000);
-    assert.equal(basicSubCheck.planId, basicPlan.id);
-  });
+      const classQuota = premiumSub.quotas.find((q) => q.service === 'CLASS');
+      assert.ok(classQuota);
+      assert.equal(classQuota.allocated, 20);
+      assert.equal(classQuota.used, 0);
+
+      // Verify initial Basic sub unchanged
+      const basicSubCheck = await (
+        await request(`subscriptions/${initialBasicSub.id}`, {
+          token: adminToken,
+        })
+      ).json();
+      assert.equal(basicSubCheck.agreedPrice, 500000);
+      assert.equal(basicSubCheck.planId, basicPlan.id);
+    },
+  );
 
   // 7. Renew into Inactive Plan -> 409 Conflict
-  await t.test('POST /api/subscriptions/:id/renew - Reject renewing into inactive plan', async () => {
-    // Create new member with active sub to test inactive plan
-    const inactMemberRes = await request('members', {
-      method: 'POST',
-      token: adminToken,
-      body: JSON.stringify({
-        email: `inact.member.${Date.now()}@test.com`,
-        fullName: 'Inactive Plan Test Member',
-        phone: `093${Date.now().toString().slice(-7)}`,
-      }),
-    });
-    assert.equal(inactMemberRes.status, 201);
-    const inactMember = await inactMemberRes.json();
+  await t.test(
+    'POST /api/subscriptions/:id/renew - Reject renewing into inactive plan',
+    async () => {
+      // Create new member with active sub to test inactive plan
+      const inactMemberRes = await request('members', {
+        method: 'POST',
+        token: adminToken,
+        body: JSON.stringify({
+          email: `inact.member.${Date.now()}@test.com`,
+          fullName: 'Inactive Plan Test Member',
+          phone: `093${Date.now().toString().slice(-7)}`,
+        }),
+      });
+      assert.equal(inactMemberRes.status, 201);
+      const inactMember = await inactMemberRes.json();
 
-    const activeSubRes = await request('subscriptions', {
-      method: 'POST',
-      token: staffToken,
-      body: JSON.stringify({
-        memberId: inactMember.id,
-        planId: basicPlan.id,
-      }),
-    });
-    assert.equal(activeSubRes.status, 201);
-    const targetSub = await activeSubRes.json();
+      const activeSubRes = await request('subscriptions', {
+        method: 'POST',
+        token: staffToken,
+        body: JSON.stringify({
+          memberId: inactMember.id,
+          planId: basicPlan.id,
+        }),
+      });
+      assert.equal(activeSubRes.status, 201);
+      const targetSub = await activeSubRes.json();
 
-    const res = await request(`subscriptions/${targetSub.id}/renew`, {
-      method: 'POST',
-      token: adminToken,
-      body: JSON.stringify({
-        planId: inactivePlan.id,
-      }),
-    });
-    assert.equal(res.status, 409);
-    const err = await res.json();
-    assert.ok(err.message.includes('inactive or discontinued'));
-  });
+      const res = await request(`subscriptions/${targetSub.id}/renew`, {
+        method: 'POST',
+        token: adminToken,
+        body: JSON.stringify({
+          planId: inactivePlan.id,
+        }),
+      });
+      assert.equal(res.status, 409);
+      const err = await res.json();
+      assert.ok(err.message.includes('inactive or discontinued'));
+    },
+  );
 
   // 8. Renew Expired Subscription -> ACTIVE status immediately (if PAID)
-  await t.test('POST /api/subscriptions/:id/renew - Expired subscription renewal starts immediately as ACTIVE', async () => {
-    const expMemberRes = await request('members', {
-      method: 'POST',
-      token: adminToken,
-      body: JSON.stringify({
-        email: `expired.member.${Date.now()}@test.com`,
-        fullName: 'Expired Sub Member',
-        phone: `096${Date.now().toString().slice(-7)}`,
-      }),
-    });
-    assert.equal(expMemberRes.status, 201);
-    const expMember = await expMemberRes.json();
+  await t.test(
+    'POST /api/subscriptions/:id/renew - Expired subscription renewal starts immediately as ACTIVE',
+    async () => {
+      const expMemberRes = await request('members', {
+        method: 'POST',
+        token: adminToken,
+        body: JSON.stringify({
+          email: `expired.member.${Date.now()}@test.com`,
+          fullName: 'Expired Sub Member',
+          phone: `096${Date.now().toString().slice(-7)}`,
+        }),
+      });
+      assert.equal(expMemberRes.status, 201);
+      const expMember = await expMemberRes.json();
 
-    const pastStart = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000);
-    const pastEnd = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
+      const pastStart = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000);
+      const pastEnd = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
 
-    const expiredSub = await db.client.subscription.create({
-      data: {
-        memberId: expMember.id,
-        planId: basicPlan.id,
-        startDate: pastStart,
-        endDate: pastEnd,
-        status: 'ACTIVE',
-        paymentStatus: 'PAID',
-        agreedPrice: 500000,
-        activatedAt: pastStart,
-      },
-    });
+      const expiredSub = await db.client.subscription.create({
+        data: {
+          memberId: expMember.id,
+          planId: basicPlan.id,
+          startDate: pastStart,
+          endDate: pastEnd,
+          status: 'ACTIVE',
+          paymentStatus: 'PAID',
+          agreedPrice: 500000,
+          activatedAt: pastStart,
+        },
+      });
 
-    // Verify it derives EXPIRED on details query
-    const checkExpRes = await request(`subscriptions/${expiredSub.id}`, { token: adminToken });
-    assert.equal(checkExpRes.status, 200);
-    const checkExpData = await checkExpRes.json();
-    assert.equal(checkExpData.effectiveStatus, 'EXPIRED');
+      // Verify it derives EXPIRED on details query
+      const checkExpRes = await request(`subscriptions/${expiredSub.id}`, {
+        token: adminToken,
+      });
+      assert.equal(checkExpRes.status, 200);
+      const checkExpData = await checkExpRes.json();
+      assert.equal(checkExpData.effectiveStatus, 'EXPIRED');
 
-    // Renew the expired subscription
-    const renewExpRes = await request(`subscriptions/${expiredSub.id}/renew`, {
-      method: 'POST',
-      token: staffToken,
-      body: JSON.stringify({
-        paymentMethod: 'CASH',
-        paymentStatus: 'PAID',
-      }),
-    });
+      // Renew the expired subscription
+      const renewExpRes = await request(
+        `subscriptions/${expiredSub.id}/renew`,
+        {
+          method: 'POST',
+          token: staffToken,
+          body: JSON.stringify({
+            paymentMethod: 'CASH',
+            paymentStatus: 'PAID',
+          }),
+        },
+      );
 
-    assert.equal(renewExpRes.status, 201);
-    const renewedExpData = await renewExpRes.json();
-    assert.equal(renewedExpData.previousSubscriptionId, expiredSub.id);
-    assert.equal(renewedExpData.storedStatus, 'ACTIVE');
-    assert.equal(renewedExpData.effectiveStatus, 'ACTIVE');
-    assert.ok(renewedExpData.activatedAt);
+      assert.equal(renewExpRes.status, 201);
+      const renewedExpData = await renewExpRes.json();
+      assert.equal(renewedExpData.previousSubscriptionId, expiredSub.id);
+      assert.equal(renewedExpData.storedStatus, 'ACTIVE');
+      assert.equal(renewedExpData.effectiveStatus, 'ACTIVE');
+      assert.ok(renewedExpData.activatedAt);
 
-    // Verify startDate is today (approx now)
-    const subStartDate = new Date(renewedExpData.startDate).getTime();
-    assert.ok(Math.abs(subStartDate - Date.now()) < 10000);
-  });
+      // Verify startDate is today (approx now)
+      const subStartDate = new Date(renewedExpData.startDate).getTime();
+      assert.ok(Math.abs(subStartDate - Date.now()) < 10000);
+    },
+  );
 
   // 9. Subscription History displays complete renewal chain
-  await t.test('GET /api/members/:memberId/subscriptions - History displays full chain', async () => {
-    const historyRes = await request(`members/${testMemberId}/subscriptions`, {
-      token: staffToken,
-    });
-    assert.equal(historyRes.status, 200);
-    const history = await historyRes.json();
-    assert.ok(history.length >= 2);
-    // Chain linkages are present
-    assert.ok(history.some((s) => s.id === activeSubId));
-  });
+  await t.test(
+    'GET /api/members/:memberId/subscriptions - History displays full chain',
+    async () => {
+      const historyRes = await request(
+        `members/${testMemberId}/subscriptions`,
+        {
+          token: staffToken,
+        },
+      );
+      assert.equal(historyRes.status, 200);
+      const history = await historyRes.json();
+      assert.ok(history.length >= 2);
+      // Chain linkages are present
+      assert.ok(history.some((s) => s.id === activeSubId));
+    },
+  );
 
   // 10. Concurrency - Simultaneous renewal calls on same subscription
-  await t.test('POST /api/subscriptions/:id/renew - Concurrency race protection', async () => {
-    // Create fresh member and active subscription for concurrency test
-    const concMemberRes = await request('members', {
-      method: 'POST',
-      token: adminToken,
-      body: JSON.stringify({
-        email: `concurrency.member.${Date.now()}@test.com`,
-        fullName: 'Concurrency Member',
-        phone: `095${Date.now().toString().slice(-7)}`,
-      }),
-    });
-    assert.equal(concMemberRes.status, 201);
-    const concMember = await concMemberRes.json();
-
-    const initialSubRes = await request('subscriptions', {
-      method: 'POST',
-      token: adminToken,
-      body: JSON.stringify({
-        memberId: concMember.id,
-        planId: basicPlan.id,
-      }),
-    });
-    assert.equal(initialSubRes.status, 201);
-    const initialSub = await initialSubRes.json();
-
-    // Fire 2 renewals simultaneously
-    const [res1, res2] = await Promise.all([
-      request(`subscriptions/${initialSub.id}/renew`, {
+  await t.test(
+    'POST /api/subscriptions/:id/renew - Concurrency race protection',
+    async () => {
+      // Create fresh member and active subscription for concurrency test
+      const concMemberRes = await request('members', {
         method: 'POST',
-        token: staffToken,
-        body: JSON.stringify({ paymentMethod: 'CASH' }),
-      }),
-      request(`subscriptions/${initialSub.id}/renew`, {
-        method: 'POST',
-        token: staffToken,
-        body: JSON.stringify({ paymentMethod: 'TRANSFER' }),
-      }),
-    ]);
+        token: adminToken,
+        body: JSON.stringify({
+          email: `concurrency.member.${Date.now()}@test.com`,
+          fullName: 'Concurrency Member',
+          phone: `095${Date.now().toString().slice(-7)}`,
+        }),
+      });
+      assert.equal(concMemberRes.status, 201);
+      const concMember = await concMemberRes.json();
 
-    const statuses = [res1.status, res2.status];
-    // Exactly one should succeed (201) and the other should be rejected with 409 Conflict
-    assert.ok(statuses.includes(201), 'One request must succeed with 201');
-    assert.ok(statuses.includes(409), 'The concurrent duplicate request must fail with 409');
-  });
+      const initialSubRes = await request('subscriptions', {
+        method: 'POST',
+        token: adminToken,
+        body: JSON.stringify({
+          memberId: concMember.id,
+          planId: basicPlan.id,
+        }),
+      });
+      assert.equal(initialSubRes.status, 201);
+      const initialSub = await initialSubRes.json();
+
+      // Fire 2 renewals simultaneously
+      const [res1, res2] = await Promise.all([
+        request(`subscriptions/${initialSub.id}/renew`, {
+          method: 'POST',
+          token: staffToken,
+          body: JSON.stringify({ paymentMethod: 'CASH' }),
+        }),
+        request(`subscriptions/${initialSub.id}/renew`, {
+          method: 'POST',
+          token: staffToken,
+          body: JSON.stringify({ paymentMethod: 'TRANSFER' }),
+        }),
+      ]);
+
+      const statuses = [res1.status, res2.status];
+      // Exactly one should succeed (201) and the other should be rejected with 409 Conflict
+      assert.ok(statuses.includes(201), 'One request must succeed with 201');
+      assert.ok(
+        statuses.includes(409),
+        'The concurrent duplicate request must fail with 409',
+      );
+    },
+  );
 
   // 9. Allow renewal if previous queued renewal was CANCELLED (Fix Renewal Chain Lock)
-  await t.test('POST /api/subscriptions/:id/renew - Allow renewal if previous renewal was CANCELLED', async () => {
-    // Cancel the renewed subscription (renewedSubId)
-    const cancelRes = await request(`subscriptions/${renewedSubId}/cancel`, {
-      method: 'POST',
-      token: staffToken,
-      body: JSON.stringify({ reason: 'Member decided to cancel queued renewal' }),
-    });
-    assert.equal(cancelRes.status, 200);
+  await t.test(
+    'POST /api/subscriptions/:id/renew - Allow renewal if previous renewal was CANCELLED',
+    async () => {
+      // Cancel the renewed subscription (renewedSubId)
+      const cancelRes = await request(`subscriptions/${renewedSubId}/cancel`, {
+        method: 'POST',
+        token: staffToken,
+        body: JSON.stringify({
+          reason: 'Member decided to cancel queued renewal',
+        }),
+      });
+      assert.equal(cancelRes.status, 200);
 
-    // Now renew from activeSubId again -> must succeed (201)
-    const reRenewRes = await request(`subscriptions/${activeSubId}/renew`, {
-      method: 'POST',
-      token: staffToken,
-      body: JSON.stringify({
-        paymentMethod: 'CASH',
-        note: 'Re-renewed after previous renewal cancellation',
-      }),
-    });
-    assert.equal(reRenewRes.status, 201);
-    const reRenewedData = await reRenewRes.json();
-    assert.ok(reRenewedData.id);
-    assert.equal(reRenewedData.previousSubscriptionId, activeSubId);
-    assert.equal(reRenewedData.storedStatus, 'UPCOMING');
-  });
+      // Now renew from activeSubId again -> must succeed (201)
+      const reRenewRes = await request(`subscriptions/${activeSubId}/renew`, {
+        method: 'POST',
+        token: staffToken,
+        body: JSON.stringify({
+          paymentMethod: 'CASH',
+          note: 'Re-renewed after previous renewal cancellation',
+        }),
+      });
+      assert.equal(reRenewRes.status, 201);
+      const reRenewedData = await reRenewRes.json();
+      assert.ok(reRenewedData.id);
+      assert.equal(reRenewedData.previousSubscriptionId, activeSubId);
+      assert.equal(reRenewedData.storedStatus, 'UPCOMING');
+    },
+  );
 });

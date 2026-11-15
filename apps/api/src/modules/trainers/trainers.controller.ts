@@ -19,6 +19,7 @@ import {
 import {
   AuthUser,
   PtAvailabilityDetail,
+  TrainerSummary,
   UserRole,
 } from '@gym/contracts';
 import { Public } from '../../common/decorators/public.decorator';
@@ -32,6 +33,19 @@ import { QueryPtAvailabilitiesDto } from './dto/query-pt-availabilities.dto';
 @Controller('trainers')
 export class TrainersController {
   constructor(private readonly trainersService: TrainersService) {}
+
+  @Get()
+  @Public()
+  @ApiOperation({
+    summary: 'List all active Personal Trainers',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'List of active personal trainers',
+  })
+  async findAllTrainers(): Promise<TrainerSummary[]> {
+    return this.trainersService.findAllActiveTrainers();
+  }
 
   @Post('me/availabilities')
   @Roles(UserRole.PT)
@@ -76,7 +90,8 @@ export class TrainersController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
-    summary: 'Cancel or delete an availability slot (guarded against active bookings)',
+    summary:
+      'Cancel or delete an availability slot (guarded against active bookings)',
   })
   @ApiResponse({
     status: 200,

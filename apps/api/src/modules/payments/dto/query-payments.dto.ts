@@ -5,6 +5,8 @@ import {
   IsEnum,
   IsInt,
   IsOptional,
+  IsString,
+  MaxLength,
   IsUUID,
   Max,
   Min,
@@ -12,6 +14,11 @@ import {
 import { PaymentStatus } from '@gym/contracts';
 
 export class QueryPaymentsDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  search?: string;
+
   @ApiPropertyOptional({ default: 1, minimum: 1, description: 'Page number' })
   @IsOptional()
   @Type(() => Number)
@@ -34,7 +41,8 @@ export class QueryPaymentsDto {
 
   @ApiPropertyOptional({
     enum: PaymentStatus,
-    description: 'Filter by payment status (PENDING, PAID, REFUNDED, CANCELLED)',
+    description:
+      'Filter by payment status (PENDING, PAID, REFUNDED, CANCELLED)',
   })
   @IsOptional()
   @IsEnum(PaymentStatus)
@@ -70,14 +78,16 @@ export class QueryPaymentsDto {
   confirmedBy?: string;
 
   @ApiPropertyOptional({
-    description: 'Filter payments created/confirmed from date-time (ISO string)',
+    description:
+      'Filter payments created/confirmed from date-time (ISO string)',
   })
   @IsOptional()
   @IsDateString()
   from?: string;
 
   @ApiPropertyOptional({
-    description: 'Filter payments created/confirmed until date-time (ISO string)',
+    description:
+      'Filter payments created/confirmed until date-time (ISO string)',
   })
   @IsOptional()
   @IsDateString()

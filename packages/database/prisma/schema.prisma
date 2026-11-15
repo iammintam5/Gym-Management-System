@@ -93,9 +93,22 @@ model User {
   recordedCheckins     Checkin[]            @relation("CheckinRecorder")
   approvedFreezes      SubscriptionFreeze[] @relation("FreezeApprover")
   notifications        Notification[]
+  sessions             AuthSession[]
   auditLogs            AuditLog[]
 
   @@map("users")
+}
+
+model AuthSession {
+  id        String   @id @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  tokenHash String   @map("token_hash")
+  expiresAt DateTime @map("expires_at") @db.Timestamptz(3)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("auth_sessions")
 }
 
 model Role {
@@ -119,20 +132,23 @@ model UserRoleAssignment {
 }
 
 model MemberProfile {
-  id            String         @id @default(uuid()) @db.Uuid
-  userId        String         @unique @map("user_id") @db.Uuid
-  fullName      String         @map("full_name")
-  phone         String?
-  gender        Gender?
-  dateOfBirth   DateTime?      @map("date_of_birth") @db.Date
-  idPhotoUrl    String?        @map("id_photo_url")
-  createdAt     DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt     DateTime       @updatedAt @map("updated_at") @db.Timestamptz(3)
-  user          User           @relation(fields: [userId], references: [id], onDelete: Restrict)
-  subscriptions Subscription[]
-  checkins      Checkin[]
-  classBookings ClassBooking[]
-  ptBookings    PtBooking[]
+  id               String         @id @default(uuid()) @db.Uuid
+  userId           String         @unique @map("user_id") @db.Uuid
+  fullName         String         @map("full_name")
+  phone            String?
+  gender           Gender?
+  dateOfBirth      DateTime?      @map("date_of_birth") @db.Date
+  idPhotoUrl       String?        @map("id_photo_url")
+  facePhotoVersion String?        @map("face_photo_version")
+  createdAt        DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt        DateTime       @updatedAt @map("updated_at") @db.Timestamptz(3)
+  user             User           @relation(fields: [userId], references: [id], onDelete: Restrict)
+  subscriptions    Subscription[]
+  checkins         Checkin[]
+  classBookings    ClassBooking[]
+  ptBookings       PtBooking[]
+
+  faceDescriptor MemberFaceDescriptor?
 
   @@map("member_profiles")
 }
@@ -320,6 +336,8 @@ model QuotaTransaction {
 }
 
 model Checkin {
+  requestId       String?            @unique @map("request_id")
+  gateIdentifier  String?            @map("gate_identifier")
   id              String             @id @default(uuid()) @db.Uuid
   memberId        String             @map("member_id") @db.Uuid
   // Nullable so rejected attempts without a valid subscription can be recorded.
@@ -465,4 +483,26 @@ model AuditLog {
   @@index([entityType, entityId, createdAt])
   @@index([actorId, createdAt])
   @@map("audit_logs")
+}
+
+model MemberFaceDescriptor {
+  memberId           String        @id @map("member_id") @db.Uuid
+  modelVersion       String        @map("model_version")
+  photoVersion       String        @map("photo_version")
+  descriptor         Float[]
+  mirroredDescriptor Float[]       @map("mirrored_descriptor")
+  updatedAt          DateTime      @updatedAt @map("updated_at") @db.Timestamptz(3)
+  member             MemberProfile @relation(fields: [memberId], references: [id], onDelete: Cascade)
+
+  @@map("member_face_descriptors")
+}
+
+model StaffRequest {
+  idempotencyKey String   @id @map("idempotency_key") @db.Uuid
+  operation      String
+  requestHash    String   @map("request_hash")
+  entityId       String   @map("entity_id") @db.Uuid
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@map("staff_requests")
 }

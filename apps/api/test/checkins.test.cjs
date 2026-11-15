@@ -185,40 +185,43 @@ test('Phase 10 - Check-ins & Gym Access Control Integration Tests', async (t) =>
   });
 
   // Test 3: Checkin with UNLIMITED GYM_ACCESS
-  await t.test('POST /api/checkins - Unlimited GYM_ACCESS acceptance', async () => {
-    // Purchase unlimited subscription for Member A
-    const subRes = await request('subscriptions', {
-      method: 'POST',
-      token: staffToken,
-      body: JSON.stringify({
-        memberId: memberA.id,
-        planId: unlimitedPlanId,
-        paymentStatus: 'PAID',
-      }),
-    });
-    assert.equal(subRes.status, 201);
-    const sub = await subRes.json();
-    assert.equal(sub.storedStatus, 'ACTIVE');
+  await t.test(
+    'POST /api/checkins - Unlimited GYM_ACCESS acceptance',
+    async () => {
+      // Purchase unlimited subscription for Member A
+      const subRes = await request('subscriptions', {
+        method: 'POST',
+        token: staffToken,
+        body: JSON.stringify({
+          memberId: memberA.id,
+          planId: unlimitedPlanId,
+          paymentStatus: 'PAID',
+        }),
+      });
+      assert.equal(subRes.status, 201);
+      const sub = await subRes.json();
+      assert.equal(sub.storedStatus, 'ACTIVE');
 
-    // Checkin by memberCode
-    const checkinRes = await request('checkins', {
-      method: 'POST',
-      token: staffToken,
-      body: JSON.stringify({ memberCode: memberA.memberCode }),
-    });
-    assert.equal(checkinRes.status, 200);
-    const checkin = await checkinRes.json();
-    assert.equal(checkin.status, 'ACCEPTED');
-    assert.equal(checkin.memberId, memberA.id);
-    assert.equal(checkin.subscriptionId, sub.id);
-    assert.equal(checkin.rejectionReason, null);
+      // Checkin by memberCode
+      const checkinRes = await request('checkins', {
+        method: 'POST',
+        token: staffToken,
+        body: JSON.stringify({ memberCode: memberA.memberCode }),
+      });
+      assert.equal(checkinRes.status, 200);
+      const checkin = await checkinRes.json();
+      assert.equal(checkin.status, 'ACCEPTED');
+      assert.equal(checkin.memberId, memberA.id);
+      assert.equal(checkin.subscriptionId, sub.id);
+      assert.equal(checkin.rejectionReason, null);
 
-    // Verify DB quota: used is still 0 (unlimited entitlement)
-    const quota = await db.client.subscriptionQuota.findUnique({
-      where: { id: checkin.quotaId },
-    });
-    assert.equal(quota.used, 0);
-  });
+      // Verify DB quota: used is still 0 (unlimited entitlement)
+      const quota = await db.client.subscriptionQuota.findUnique({
+        where: { id: checkin.quotaId },
+      });
+      assert.equal(quota.used, 0);
+    },
+  );
 
   // Test 4: Anti-Passback Protection (< 5 minutes)
   await t.test('POST /api/checkins - Anti-passback rejection', async () => {
@@ -231,7 +234,7 @@ test('Phase 10 - Check-ins & Gym Access Control Integration Tests', async (t) =>
     assert.equal(passbackRes.status, 200);
     const passbackData = await passbackRes.json();
     assert.equal(passbackData.status, 'REJECTED');
-    assert.ok(passbackData.rejectionReason.includes('Anti-passback'));
+    assert.ok(passbackData.rejectionReason.includes('vòng một phút'));
   });
 
   // Test 5: Checkin with COUNT GYM_ACCESS and Quota Consumption
@@ -305,114 +308,125 @@ test('Phase 10 - Check-ins & Gym Access Control Integration Tests', async (t) =>
     assert.equal(exhaustedRes.status, 200);
     const exhaustedData = await exhaustedRes.json();
     assert.equal(exhaustedData.status, 'REJECTED');
-    assert.ok(exhaustedData.rejectionReason.includes('hết số lượt'));
+    assert.ok(exhaustedData.rejectionReason.includes('hết lượt'));
   });
 
   // Test 7: Rejection when plan has NO GYM_ACCESS
-  await t.test('POST /api/checkins - No GYM_ACCESS entitlement rejection', async () => {
-    // Purchase Class-only plan for Member C
-    await request('subscriptions', {
-      method: 'POST',
-      token: staffToken,
-      body: JSON.stringify({
-        memberId: memberC.id,
-        planId: classOnlyPlanId,
-        paymentStatus: 'PAID',
-      }),
-    });
+  await t.test(
+    'POST /api/checkins - No GYM_ACCESS entitlement rejection',
+    async () => {
+      // Purchase Class-only plan for Member C
+      await request('subscriptions', {
+        method: 'POST',
+        token: staffToken,
+        body: JSON.stringify({
+          memberId: memberC.id,
+          planId: classOnlyPlanId,
+          paymentStatus: 'PAID',
+        }),
+      });
 
-    const noAccessRes = await request('checkins', {
-      method: 'POST',
-      token: staffToken,
-      body: JSON.stringify({ memberId: memberC.id }),
-    });
-    assert.equal(noAccessRes.status, 200);
-    const noAccessData = await noAccessRes.json();
-    assert.equal(noAccessData.status, 'REJECTED');
-    assert.ok(noAccessData.rejectionReason.includes('GYM_ACCESS'));
-  });
+      const noAccessRes = await request('checkins', {
+        method: 'POST',
+        token: staffToken,
+        body: JSON.stringify({ memberId: memberC.id }),
+      });
+      assert.equal(noAccessRes.status, 200);
+      const noAccessData = await noAccessRes.json();
+      assert.equal(noAccessData.status, 'REJECTED');
+      assert.ok(noAccessData.rejectionReason.includes('không có quyền'));
+    },
+  );
 
   // Test 8: Rejection when Member has NO active subscription
-  await t.test('POST /api/checkins - No active subscription rejection', async () => {
-    // Create new member without any subscription
-    const freshMemberRes = await request('members', {
-      method: 'POST',
-      token: staffToken,
-      body: JSON.stringify({
-        email: `no.sub.${Date.now()}@test.com`,
-        fullName: 'No Sub Member',
-        phone: `094${Date.now().toString().slice(-7)}`,
-      }),
-    });
-    const freshMember = await freshMemberRes.json();
+  await t.test(
+    'POST /api/checkins - No active subscription rejection',
+    async () => {
+      // Create new member without any subscription
+      const freshMemberRes = await request('members', {
+        method: 'POST',
+        token: staffToken,
+        body: JSON.stringify({
+          email: `no.sub.${Date.now()}@test.com`,
+          fullName: 'No Sub Member',
+          phone: `094${Date.now().toString().slice(-7)}`,
+        }),
+      });
+      const freshMember = await freshMemberRes.json();
 
-    const noSubCheckin = await request('checkins', {
-      method: 'POST',
-      token: staffToken,
-      body: JSON.stringify({ memberId: freshMember.id }),
-    });
-    assert.equal(noSubCheckin.status, 200);
-    const data = await noSubCheckin.json();
-    assert.equal(data.status, 'REJECTED');
-    assert.ok(data.rejectionReason.includes('không có gói tập'));
-  });
+      const noSubCheckin = await request('checkins', {
+        method: 'POST',
+        token: staffToken,
+        body: JSON.stringify({ memberId: freshMember.id }),
+      });
+      assert.equal(noSubCheckin.status, 200);
+      const data = await noSubCheckin.json();
+      assert.equal(data.status, 'REJECTED');
+      assert.ok(
+        data.rejectionReason.toLowerCase().includes('không có gói tập'),
+      );
+    },
+  );
 
   // Test 9: JIT Activation on Checkin
-  await t.test('POST /api/checkins - JIT activation of UPCOMING subscription', async () => {
-    // Create new member
-    const jitMemberRes = await request('members', {
-      method: 'POST',
-      token: staffToken,
-      body: JSON.stringify({
-        email: `jit.checkin.${Date.now()}@test.com`,
-        fullName: 'JIT Checkin Member',
-        phone: `095${Date.now().toString().slice(-7)}`,
-      }),
-    });
-    const jitMember = await jitMemberRes.json();
+  await t.test(
+    'POST /api/checkins - JIT activation of UPCOMING subscription',
+    async () => {
+      // Create new member
+      const jitMemberRes = await request('members', {
+        method: 'POST',
+        token: staffToken,
+        body: JSON.stringify({
+          email: `jit.checkin.${Date.now()}@test.com`,
+          fullName: 'JIT Checkin Member',
+          phone: `095${Date.now().toString().slice(-7)}`,
+        }),
+      });
+      const jitMember = await jitMemberRes.json();
 
-    // Create UPCOMING subscription directly in DB with past startDate (e.g. 1 hour ago)
-    const jitSub = await db.client.subscription.create({
-      data: {
-        memberId: jitMember.id,
-        planId: unlimitedPlanId,
-        startDate: new Date(Date.now() - 3600000),
-        endDate: new Date(Date.now() + 86400000 * 30),
-        status: 'UPCOMING',
-        paymentStatus: 'PAID',
-        agreedPrice: 500000,
-        activatedAt: null,
-      },
-    });
-    // Create quota
-    const serviceType = await db.client.serviceType.findUnique({
-      where: { code: 'GYM_ACCESS' },
-    });
-    await db.client.subscriptionQuota.create({
-      data: {
-        subscriptionId: jitSub.id,
-        serviceTypeId: serviceType.id,
-        allocated: null,
-      },
-    });
+      // Create UPCOMING subscription directly in DB with past startDate (e.g. 1 hour ago)
+      const jitSub = await db.client.subscription.create({
+        data: {
+          memberId: jitMember.id,
+          planId: unlimitedPlanId,
+          startDate: new Date(Date.now() - 3600000),
+          endDate: new Date(Date.now() + 86400000 * 30),
+          status: 'UPCOMING',
+          paymentStatus: 'PAID',
+          agreedPrice: 500000,
+          activatedAt: null,
+        },
+      });
+      // Create quota
+      const serviceType = await db.client.serviceType.findUnique({
+        where: { code: 'GYM_ACCESS' },
+      });
+      await db.client.subscriptionQuota.create({
+        data: {
+          subscriptionId: jitSub.id,
+          serviceTypeId: serviceType.id,
+          allocated: null,
+        },
+      });
 
-    // Check in -> Should trigger JIT promotion to ACTIVE and ACCEPT
-    const checkinRes = await request('checkins', {
-      method: 'POST',
-      token: staffToken,
-      body: JSON.stringify({ memberId: jitMember.id }),
-    });
-    assert.equal(checkinRes.status, 200);
-    const checkinData = await checkinRes.json();
-    assert.equal(checkinData.status, 'ACCEPTED');
+      // Check in -> Should trigger JIT promotion to ACTIVE and ACCEPT
+      const checkinRes = await request('checkins', {
+        method: 'POST',
+        token: staffToken,
+        body: JSON.stringify({ memberId: jitMember.id }),
+      });
+      assert.equal(checkinRes.status, 200);
+      const checkinData = await checkinRes.json();
+      assert.equal(checkinData.status, 'ACCEPTED');
 
-    // Verify subscription status in DB is now ACTIVE with activatedAt
-    const updatedSub = await db.client.subscription.findUnique({
-      where: { id: jitSub.id },
-    });
-    assert.equal(updatedSub.status, 'ACTIVE');
-    assert.ok(updatedSub.activatedAt);
-  });
+      // Verify subscription status in DB is now ACTIVE with activatedAt
+      const updatedSub = await db.client.subscription.findUnique({
+        where: { id: jitSub.id },
+      });
+      assert.equal(updatedSub.status, 'ACTIVE');
+      assert.ok(updatedSub.activatedAt);
+    },
+  );
 
   // Test 10: Query Checkins and Today Stats
   await t.test('GET /api/checkins & /api/checkins/today-stats', async () => {

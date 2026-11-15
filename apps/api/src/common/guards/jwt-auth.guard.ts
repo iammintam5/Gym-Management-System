@@ -54,7 +54,11 @@ export class JwtAuthGuard implements CanActivate {
       ) {
         throw new Error('Invalid access claims');
       }
-      request.user = { id: payload.sub, roles: payload.roles as UserRole[] };
+      request.user = {
+        id: payload.sub,
+        roles: payload.roles as UserRole[],
+        ...(typeof payload.sid === 'string' ? { sessionId: payload.sid } : {}),
+      };
       return true;
     } catch {
       throw new UnauthorizedException('Invalid or expired access token');

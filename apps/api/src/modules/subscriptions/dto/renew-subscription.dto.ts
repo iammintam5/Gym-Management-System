@@ -10,6 +10,13 @@ import { PaymentStatus } from '@gym/contracts';
 
 export class RenewSubscriptionDto {
   @ApiPropertyOptional({
+    description: 'Stable UUID for retries of the same operation',
+  })
+  @IsOptional()
+  @IsUUID()
+  idempotencyKey?: string;
+
+  @ApiPropertyOptional({
     description:
       'Target membership plan ID (UUID). If omitted, reuses the plan from the previous subscription.',
     example: '22222222-2222-2222-2222-222222222222',
@@ -19,13 +26,13 @@ export class RenewSubscriptionDto {
   planId?: string;
 
   @ApiPropertyOptional({
-    description: 'Payment method (e.g. CASH, TRANSFER, CARD)',
+    description: 'Payment method (CASH or TRANSFER)',
     example: 'CASH',
   })
   @IsOptional()
   @IsString()
-  @MaxLength(50)
-  paymentMethod?: string;
+  @IsEnum(['CASH', 'TRANSFER'])
+  paymentMethod?: 'CASH' | 'TRANSFER';
 
   @ApiPropertyOptional({
     enum: PaymentStatus,

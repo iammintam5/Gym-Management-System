@@ -39,11 +39,14 @@ export class CheckinsController {
   @HttpCode(HttpStatus.OK)
   @Roles(UserRole.ADMIN, UserRole.STAFF)
   @ApiOperation({
-    summary: 'Process a gym access check-in attempt (Admin & Staff / Turnstile Gate)',
+    summary:
+      'Process a gym access check-in attempt (Admin & Staff / Turnstile Gate)',
     description:
       'Validates active membership, executes Anti-passback checks (1 min), verifies GYM_ACCESS entitlement, and atomically consumes quota if finite.',
   })
-  @ApiOkResponse({ description: 'Check-in processed (status ACCEPTED or REJECTED)' })
+  @ApiOkResponse({
+    description: 'Check-in processed (status ACCEPTED or REJECTED)',
+  })
   @ApiNotFoundResponse({ description: 'Member not found' })
   @ApiForbiddenResponse({ description: 'Forbidden (Admin & Staff only)' })
   @ApiUnauthorizedResponse({ description: 'Unauthorized' })
@@ -57,7 +60,8 @@ export class CheckinsController {
   @Get()
   @Roles(UserRole.ADMIN, UserRole.STAFF)
   @ApiOperation({
-    summary: 'List all check-in records with filters and pagination (Admin & Staff)',
+    summary:
+      'List all check-in records with filters and pagination (Admin & Staff)',
   })
   @ApiOkResponse({ description: 'Paginated check-in records' })
   @ApiForbiddenResponse({ description: 'Forbidden (Admin & Staff only)' })
@@ -71,7 +75,8 @@ export class CheckinsController {
   @Get('today-stats')
   @Roles(UserRole.ADMIN, UserRole.STAFF)
   @ApiOperation({
-    summary: 'Get check-in statistics for today (total, accepted, rejected) (Admin & Staff)',
+    summary:
+      'Get check-in statistics for today (total, accepted, rejected) (Admin & Staff)',
   })
   @ApiOkResponse({ description: 'Today check-in statistics' })
   @ApiForbiddenResponse({ description: 'Forbidden (Admin & Staff only)' })
@@ -83,15 +88,14 @@ export class CheckinsController {
   @Get('me')
   @Roles(UserRole.MEMBER)
   @ApiOperation({
-    summary: 'Get personal check-in history for authenticated member (Self-service)',
+    summary:
+      'Get personal check-in history for authenticated member (Self-service)',
   })
   @ApiOkResponse({ description: 'Personal check-in history' })
   @ApiNotFoundResponse({ description: 'Member profile not found' })
   @ApiForbiddenResponse({ description: 'Forbidden (Member only)' })
   @ApiUnauthorizedResponse({ description: 'Unauthorized' })
-  async findMe(
-    @CurrentUser() currentUser: AuthUser,
-  ): Promise<CheckinDetail[]> {
+  async findMe(@CurrentUser() currentUser: AuthUser): Promise<CheckinDetail[]> {
     return this.checkinsService.findSelfHistory(currentUser.id);
   }
 }

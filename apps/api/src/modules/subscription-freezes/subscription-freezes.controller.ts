@@ -32,9 +32,7 @@ import { QueryFreezesDto } from './dto/query-freezes.dto';
 @Controller()
 @ApiBearerAuth()
 export class SubscriptionFreezesController {
-  constructor(
-    private readonly freezesService: SubscriptionFreezesService,
-  ) {}
+  constructor(private readonly freezesService: SubscriptionFreezesService) {}
 
   @Post('subscriptions/:id/freezes')
   @Roles(UserRole.MEMBER, UserRole.STAFF, UserRole.ADMIN)
@@ -108,7 +106,8 @@ export class SubscriptionFreezesController {
   @Roles(UserRole.STAFF, UserRole.ADMIN)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
-    summary: 'Unfreeze a subscription early or restore upon completion (Staff/Admin)',
+    summary:
+      'Unfreeze a subscription early or restore upon completion (Staff/Admin)',
   })
   @ApiResponse({
     status: 200,
@@ -135,6 +134,12 @@ export class SubscriptionFreezesController {
     @CurrentUser() user: AuthUser,
   ): Promise<PaginatedFreezesResponse> {
     return this.freezesService.findAll(query, user);
+  }
+
+  @Get('freezes/statistics')
+  @Roles(UserRole.STAFF, UserRole.ADMIN)
+  statistics() {
+    return this.freezesService.statistics();
   }
 
   @Get('freezes/:id')

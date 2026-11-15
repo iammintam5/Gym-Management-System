@@ -69,7 +69,9 @@ export class EmployeesService {
           throw new ConflictException('Phone number already in use');
         }
         if (target.includes('user_id')) {
-          throw new ConflictException('Employee profile already exists for this user');
+          throw new ConflictException(
+            'Employee profile already exists for this user',
+          );
         }
         throw new ConflictException('A unique constraint was violated');
       }
@@ -103,7 +105,9 @@ export class EmployeesService {
       where: { code: dto.role },
     });
     if (!targetRole) {
-      throw new BadRequestException(`${dto.role} role is not initialized in database`);
+      throw new BadRequestException(
+        `${dto.role} role is not initialized in database`,
+      );
     }
 
     try {
@@ -150,7 +154,9 @@ export class EmployeesService {
         return profile;
       });
 
-      this.logger.log(`Created new employee: ${createdProfile.fullName} (${email}, Role: ${dto.role})`);
+      this.logger.log(
+        `Created new employee: ${createdProfile.fullName} (${email}, Role: ${dto.role})`,
+      );
       return this.mapEmployeeDetail(createdProfile);
     } catch (error) {
       this.handlePrismaError(error);
@@ -198,7 +204,7 @@ export class EmployeesService {
       [query.sortBy || 'createdAt']: query.sortOrder || 'desc',
     };
 
-    const [employees, total] = await this.db.client.$transaction([
+    const [employees, total] = await Promise.all([
       this.db.client.employeeProfile.findMany({
         where,
         skip,
@@ -279,7 +285,9 @@ export class EmployeesService {
 
     const matched = profiles.find((p) => {
       const formatted = `EMP-${p.id.replace(/-/g, '').slice(0, 8).toUpperCase()}`;
-      return formatted === cleanCode || p.id.toLowerCase().startsWith(rawIdPart);
+      return (
+        formatted === cleanCode || p.id.toLowerCase().startsWith(rawIdPart)
+      );
     });
 
     if (!matched) {
@@ -306,7 +314,9 @@ export class EmployeesService {
     });
 
     if (!profile) {
-      throw new NotFoundException('Employee profile not found for current user');
+      throw new NotFoundException(
+        'Employee profile not found for current user',
+      );
     }
 
     return this.mapEmployeeDetail(profile);
@@ -321,16 +331,23 @@ export class EmployeesService {
     });
 
     if (!existing) {
-      throw new NotFoundException('Employee profile not found for current user');
+      throw new NotFoundException(
+        'Employee profile not found for current user',
+      );
     }
 
     try {
       const updated = await this.db.client.employeeProfile.update({
         where: { userId },
         data: {
-          fullName: dto.fullName !== undefined ? dto.fullName.trim() : undefined,
+          fullName:
+            dto.fullName !== undefined ? dto.fullName.trim() : undefined,
           phone:
-            dto.phone !== undefined ? (dto.phone ? dto.phone.trim() : null) : undefined,
+            dto.phone !== undefined
+              ? dto.phone
+                ? dto.phone.trim()
+                : null
+              : undefined,
           specialization:
             dto.specialization !== undefined
               ? dto.specialization
@@ -351,7 +368,9 @@ export class EmployeesService {
         },
       });
 
-      this.logger.log(`Employee self-updated profile: ${updated.fullName} (${userId})`);
+      this.logger.log(
+        `Employee self-updated profile: ${updated.fullName} (${userId})`,
+      );
       return this.mapEmployeeDetail(updated);
     } catch (error) {
       this.handlePrismaError(error);
@@ -375,7 +394,10 @@ export class EmployeesService {
     try {
       const updated = await this.db.client.$transaction(async (tx) => {
         // If email changed, check conflict and update User
-        if (dto.email && dto.email.trim().toLowerCase() !== existing.user.email) {
+        if (
+          dto.email &&
+          dto.email.trim().toLowerCase() !== existing.user.email
+        ) {
           const newEmail = dto.email.trim().toLowerCase();
           const emailUser = await tx.user.findUnique({
             where: { email: newEmail },
@@ -393,7 +415,8 @@ export class EmployeesService {
         const profile = await tx.employeeProfile.update({
           where: { id: existing.id },
           data: {
-            fullName: dto.fullName !== undefined ? dto.fullName.trim() : undefined,
+            fullName:
+              dto.fullName !== undefined ? dto.fullName.trim() : undefined,
             phone:
               dto.phone !== undefined
                 ? dto.phone

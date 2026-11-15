@@ -18,6 +18,11 @@ import {
   SubscriptionStatus,
   UserRole,
 } from '@gym/contracts';
+import {
+  lockScheduleWrites,
+  assertBookingAccess,
+  assertAttendanceTime,
+} from '../common/booking-access';
 import { DatabaseService } from '../database/database.module';
 import { CreateClassBookingDto } from './dto/create-class-booking.dto';
 import { MarkClassAttendanceDto } from './dto/mark-attendance.dto';
@@ -50,6 +55,7 @@ interface RawBookingWithRelations {
   member: {
     id: string;
     fullName: string;
+    idPhotoUrl?: string | null;
   };
 }
 
@@ -67,6 +73,7 @@ export class ClassBookingsService {
     let targetMember: {
       id: string;
       fullName: string;
+      userId: string;
       user: { isActive: boolean };
     } | null = null;
 
@@ -76,7 +83,9 @@ export class ClassBookingsService {
         include: { user: true },
       });
       if (!targetMember) {
-        throw new NotFoundException('Member profile not found for current user');
+        throw new NotFoundException(
+          'Member profile not found for current user',
+        );
       }
     } else {
       if (!dto.memberId) {
@@ -89,46 +98,60 @@ export class ClassBookingsService {
         include: { user: true },
       });
       if (!targetMember) {
-        throw new NotFoundException(`Member with ID "${dto.memberId}" not found`);
+        throw new NotFoundException(
+          `Member with ID "${dto.memberId}" not found`,
+        );
       }
     }
 
+    if (
+      user.roles.includes(UserRole.MEMBER) &&
+      !user.roles.some(
+        (role) => role === UserRole.ADMIN || role === UserRole.STAFF,
+      ) &&
+      targetMember.userId !== user.id
+    ) {
+      throw new ForbiddenException(
+        'Hội viên chỉ được đặt lịch cho chính mình.',
+      );
+    }
     if (!targetMember.user.isActive) {
       throw new ConflictException(
         'Tài khoản hội viên đã bị khoá hoặc ngưng hoạt động',
       );
     }
 
-    // 2. Validate schedule
-    const schedule = await this.db.client.classSchedule.findUnique({
-      where: { id: dto.scheduleId },
-      include: {
-        gymClass: true,
-        trainer: true,
-      },
-    });
-
-    if (!schedule) {
-      throw new NotFoundException(
-        `Class schedule with ID "${dto.scheduleId}" not found`,
-      );
-    }
-
-    if (schedule.status !== ScheduleStatus.SCHEDULED) {
-      throw new ConflictException(
-        `Không thể đặt chỗ cho ca dạy có trạng thái ${schedule.status}`,
-      );
-    }
-
-    const now = new Date();
-    if (schedule.startsAt.getTime() <= now.getTime()) {
-      throw new BadRequestException(
-        'Không thể đặt chỗ cho ca dạy đã diễn ra hoặc đã kết thúc',
-      );
-    }
-
-    // 3. Concurrency-safe atomic transaction
     const booking = await this.db.client.$transaction(async (tx) => {
+      await lockScheduleWrites(tx);
+      await tx.$queryRaw`SELECT id FROM member_profiles WHERE id = ${targetMember.id}::uuid FOR UPDATE`;
+      // 2. Validate schedule
+      const schedule = await tx.classSchedule.findUnique({
+        where: { id: dto.scheduleId },
+        include: {
+          gymClass: true,
+          trainer: true,
+        },
+      });
+
+      if (!schedule) {
+        throw new NotFoundException(
+          `Class schedule with ID "${dto.scheduleId}" not found`,
+        );
+      }
+
+      if (schedule.status !== ScheduleStatus.SCHEDULED) {
+        throw new ConflictException(
+          `Không thể đặt chỗ cho ca dạy có trạng thái ${schedule.status}`,
+        );
+      }
+
+      const now = new Date();
+      if (schedule.startsAt.getTime() <= now.getTime()) {
+        throw new BadRequestException(
+          'Không thể đặt chỗ cho ca dạy đã diễn ra hoặc đã kết thúc',
+        );
+      }
+
       // Check capacity
       const bookedCount = await tx.classBooking.count({
         where: {
@@ -159,6 +182,26 @@ export class ClassBookingsService {
         );
       }
 
+      const overlappingClass = await tx.classBooking.findFirst({
+        where: {
+          memberId: targetMember.id,
+          status: BookingStatus.BOOKED,
+          schedule: {
+            startsAt: { lt: schedule.endsAt },
+            endsAt: { gt: schedule.startsAt },
+          },
+        },
+      });
+      const overlappingPt = await tx.ptBooking.findFirst({
+        where: {
+          memberId: targetMember.id,
+          status: BookingStatus.BOOKED,
+          startsAt: { lt: schedule.endsAt },
+          endsAt: { gt: schedule.startsAt },
+        },
+      });
+      if (overlappingClass || overlappingPt)
+        throw new ConflictException('Hội viên đã có lịch tập trùng thời gian.');
       // Check active subscription covering class date
       const activeSub = await tx.subscription.findFirst({
         where: {
@@ -181,6 +224,12 @@ export class ClassBookingsService {
         );
       }
 
+      await assertBookingAccess(
+        tx,
+        activeSub.id,
+        schedule.startsAt,
+        schedule.endsAt,
+      );
       // Check CLASS quota entitlement
       const classQuota = activeSub.quotas.find(
         (q) => q.serviceType.code === ServiceTypeCode.CLASS,
@@ -202,10 +251,10 @@ export class ClassBookingsService {
           );
         }
 
-        await tx.subscriptionQuota.update({
-          where: { id: classQuota.id },
-          data: { reserved: { increment: 1 } },
-        });
+        const reserved =
+          await tx.$executeRaw`UPDATE subscription_quotas SET reserved = reserved + 1, updated_at = CURRENT_TIMESTAMP WHERE id = ${classQuota.id}::uuid AND used + reserved < allocated`;
+        if (reserved !== 1)
+          throw new ConflictException('Gói tập đã hết lượt khả dụng.');
 
         await tx.quotaTransaction.create({
           data: {
@@ -275,7 +324,7 @@ export class ClassBookingsService {
     });
 
     this.logger.log(
-      `Class booking created: Booking ${booking.id} for member ${targetMember.fullName} (${targetMember.id}) in schedule ${schedule.id} (${schedule.gymClass.name})`,
+      `Class booking created: Booking ${booking.id} for member ${targetMember.fullName} (${targetMember.id}) in schedule ${booking.schedule.id} (${booking.schedule.gymClass.name})`,
     );
 
     return this.mapBookingDetail(booking as unknown as RawBookingWithRelations);
@@ -339,6 +388,19 @@ export class ClassBookingsService {
 
     // Atomic transaction for cancellation and quota refund
     const cancelled = await this.db.client.$transaction(async (tx) => {
+      await lockScheduleWrites(tx);
+      await tx.$queryRaw`SELECT id FROM member_profiles WHERE id = ${booking.memberId}::uuid FOR UPDATE`;
+      await tx.$queryRaw`SELECT id FROM subscriptions WHERE id = ${booking.subscriptionId}::uuid FOR UPDATE`;
+      const current = await tx.classBooking.findUniqueOrThrow({
+        where: { id: bookingId },
+        include: { schedule: true },
+      });
+      if (
+        current.status !== BookingStatus.BOOKED ||
+        current.attendance !== AttendanceStatus.PENDING
+      )
+        throw new ConflictException('Đặt chỗ đã được xử lý. Vui lòng tải lại.');
+
       const updatedBooking = await tx.classBooking.update({
         where: { id: bookingId },
         data: {
@@ -389,7 +451,9 @@ export class ClassBookingsService {
       `Class booking ${bookingId} cancelled by actor ${user.id} (${booking.member.fullName})`,
     );
 
-    return this.mapBookingDetail(cancelled as unknown as RawBookingWithRelations);
+    return this.mapBookingDetail(
+      cancelled as unknown as RawBookingWithRelations,
+    );
   }
 
   async markAttendance(
@@ -417,7 +481,8 @@ export class ClassBookingsService {
     // Check authority: Admin, Staff, or the assigned Trainer
     const isTrainer = booking.schedule.trainer.userId === user.id;
     const isStaffOrAdmin =
-      user.roles.includes(UserRole.ADMIN) || user.roles.includes(UserRole.STAFF);
+      user.roles.includes(UserRole.ADMIN) ||
+      user.roles.includes(UserRole.STAFF);
 
     if (!isTrainer && !isStaffOrAdmin) {
       throw new ForbiddenException(
@@ -440,6 +505,32 @@ export class ClassBookingsService {
     const now = new Date();
 
     const updated = await this.db.client.$transaction(async (tx) => {
+      await lockScheduleWrites(tx);
+      await tx.$queryRaw`SELECT id FROM member_profiles WHERE id = ${booking.memberId}::uuid FOR UPDATE`;
+      await tx.$queryRaw`SELECT id FROM subscriptions WHERE id = ${booking.subscriptionId}::uuid FOR UPDATE`;
+      const current = await tx.classBooking.findUniqueOrThrow({
+        where: { id: bookingId },
+        include: { schedule: true },
+      });
+      if (
+        current.status !== BookingStatus.BOOKED ||
+        current.attendance !== AttendanceStatus.PENDING
+      )
+        throw new ConflictException('Đặt chỗ đã được xử lý. Vui lòng tải lại.');
+      assertAttendanceTime(
+        current.schedule.startsAt,
+        current.schedule.endsAt,
+        dto.attendance === AttendanceStatus.ABSENT,
+      );
+      if (current.schedule.status !== ScheduleStatus.SCHEDULED)
+        throw new ConflictException('Ca học không còn mở để điểm danh.');
+      await assertBookingAccess(
+        tx,
+        current.subscriptionId,
+        current.schedule.startsAt,
+        current.schedule.endsAt,
+      );
+
       const isPresent = dto.attendance === 'PRESENT';
 
       const updatedBooking = await tx.classBooking.update({
@@ -448,9 +539,7 @@ export class ClassBookingsService {
           attendance: isPresent
             ? AttendanceStatus.PRESENT
             : AttendanceStatus.ABSENT,
-          status: isPresent
-            ? BookingStatus.COMPLETED
-            : BookingStatus.NO_SHOW,
+          status: isPresent ? BookingStatus.COMPLETED : BookingStatus.NO_SHOW,
           attendedAt: isPresent ? now : null,
         },
         include: {
@@ -580,7 +669,8 @@ export class ClassBookingsService {
 
     // Role check
     const isStaffOrAdmin =
-      user.roles.includes(UserRole.ADMIN) || user.roles.includes(UserRole.STAFF);
+      user.roles.includes(UserRole.ADMIN) ||
+      user.roles.includes(UserRole.STAFF);
     const isTrainer = schedule.trainer.userId === user.id;
 
     if (!isStaffOrAdmin && !isTrainer) {
@@ -623,6 +713,7 @@ export class ClassBookingsService {
       memberId: item.memberId,
       memberCode,
       memberFullName: item.member.fullName,
+      memberIdPhotoUrl: item.member.idPhotoUrl ?? null,
       subscriptionId: item.subscriptionId,
       quotaId: item.quotaId,
       status: item.status as BookingStatus,

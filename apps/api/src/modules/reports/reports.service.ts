@@ -54,17 +54,79 @@ export class ReportsService {
 
   async getDashboardSummary(): Promise<DashboardSummaryReport> {
     const now = new Date();
-    const startOfMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0, 0));
-    const startOfToday = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0, 0));
+    const startOfMonth = new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0, 0),
+    );
+    const startOfToday = new Date(
+      Date.UTC(
+        now.getUTCFullYear(),
+        now.getUTCMonth(),
+        now.getUTCDate(),
+        0,
+        0,
+        0,
+        0,
+      ),
+    );
     const in7Days = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
 
-    // 1. Financials: Confirmed payments this month
-    const payments = await this.db.client.paymentRecord.findMany({
-      where: {
-        status: PaymentStatus.PAID,
-        confirmedAt: { gte: startOfMonth },
-      },
-    });
+    const [
+      payments,
+      totalActiveMembers,
+      newMembersCount,
+      expiringWithin7DaysCount,
+      totalCheckinsToday,
+      classesConductedCount,
+      ptSessionsCompletedCount,
+    ] = await Promise.all([
+      this.db.client.paymentRecord.findMany({
+        where: {
+          status: PaymentStatus.PAID,
+          confirmedAt: { gte: startOfMonth },
+        },
+        select: {
+          amount: true,
+          method: true,
+        },
+      }),
+      this.db.client.subscription
+        .groupBy({
+          by: ['memberId'],
+          where: {
+            status: SubscriptionStatus.ACTIVE,
+            startDate: { lte: now },
+            endDate: { gte: now },
+          },
+        })
+        .then((res) => res.length),
+      this.db.client.memberProfile.count({
+        where: { createdAt: { gte: startOfMonth } },
+      }),
+      this.db.client.subscription.count({
+        where: {
+          status: SubscriptionStatus.ACTIVE,
+          endDate: { gte: now, lte: in7Days },
+        },
+      }),
+      this.db.client.checkin.count({
+        where: {
+          checkedInAt: { gte: startOfToday },
+          status: 'ACCEPTED',
+        },
+      }),
+      this.db.client.classSchedule.count({
+        where: {
+          startsAt: { gte: startOfMonth, lte: now },
+          status: { not: 'CANCELLED' },
+        },
+      }),
+      this.db.client.ptBooking.count({
+        where: {
+          status: 'COMPLETED',
+          startsAt: { gte: startOfMonth },
+        },
+      }),
+    ]);
 
     let totalRevenue = 0;
     let cashAmount = 0;
@@ -83,58 +145,6 @@ export class ReportsService {
         cardAmount += amt;
       }
     }
-
-    // 2. Members: Active, New this month, Expiring within 7 days
-    const [totalActiveMembers, newMembersCount, expiringWithin7DaysCount] =
-      await Promise.all([
-        // Active members (distinct memberId with status ACTIVE)
-        this.db.client.subscription
-          .groupBy({
-            by: ['memberId'],
-            where: {
-              status: SubscriptionStatus.ACTIVE,
-              startDate: { lte: now },
-              endDate: { gte: now },
-            },
-          })
-          .then((res) => res.length),
-
-        // New members registered this month
-        this.db.client.memberProfile.count({
-          where: { createdAt: { gte: startOfMonth } },
-        }),
-
-        // Active subscriptions expiring within 7 days
-        this.db.client.subscription.count({
-          where: {
-            status: SubscriptionStatus.ACTIVE,
-            endDate: { gte: now, lte: in7Days },
-          },
-        }),
-      ]);
-
-    // 3. Operations: Checkins today, classes conducted this month, PT sessions completed this month
-    const [totalCheckinsToday, classesConductedCount, ptSessionsCompletedCount] =
-      await Promise.all([
-        this.db.client.checkin.count({
-          where: {
-            checkedInAt: { gte: startOfToday },
-            status: 'ACCEPTED',
-          },
-        }),
-        this.db.client.classSchedule.count({
-          where: {
-            startsAt: { gte: startOfMonth, lte: now },
-            status: { not: 'CANCELLED' },
-          },
-        }),
-        this.db.client.ptBooking.count({
-          where: {
-            status: 'COMPLETED',
-            startsAt: { gte: startOfMonth },
-          },
-        }),
-      ]);
 
     return {
       period: {
@@ -259,7 +269,9 @@ export class ReportsService {
     };
   }
 
-  async getAttendancePeakHours(dateStr?: string): Promise<AttendancePeakHoursReport> {
+  async getAttendancePeakHours(
+    dateStr?: string,
+  ): Promise<AttendancePeakHoursReport> {
     const targetDate = dateStr ? new Date(dateStr) : new Date();
     const startOfDay = new Date(
       Date.UTC(
@@ -306,7 +318,8 @@ export class ReportsService {
     let peakHour: number | null = null;
     let maxCount = -1;
 
-    const hourlyDistribution: AttendancePeakHoursReport['hourlyDistribution'] = [];
+    const hourlyDistribution: AttendancePeakHoursReport['hourlyDistribution'] =
+      [];
 
     for (let h = 6; h <= 22; h++) {
       const count = hourCounts[h] ?? 0;
@@ -339,7 +352,9 @@ export class ReportsService {
     const from = fromStr
       ? new Date(fromStr)
       : new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-    const to = toStr ? new Date(toStr) : new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+    const to = toStr
+      ? new Date(toStr)
+      : new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
 
     const schedules = await this.db.client.classSchedule.findMany({
       where: {
@@ -359,26 +374,28 @@ export class ReportsService {
     });
 
     let totalRates = 0;
-    const items = (schedules as unknown as RawScheduleWithBookings[]).map((s) => {
-      const bookedCount = s.bookings.length;
-      const capacity = s.capacity;
-      const utilizationRate =
-        capacity > 0
-          ? Math.min(100, Math.round((bookedCount / capacity) * 1000) / 10)
-          : 0;
+    const items = (schedules as unknown as RawScheduleWithBookings[]).map(
+      (s) => {
+        const bookedCount = s.bookings.length;
+        const capacity = s.capacity;
+        const utilizationRate =
+          capacity > 0
+            ? Math.min(100, Math.round((bookedCount / capacity) * 1000) / 10)
+            : 0;
 
-      totalRates += utilizationRate;
+        totalRates += utilizationRate;
 
-      return {
-        scheduleId: s.id,
-        className: s.gymClass.name,
-        instructorName: s.trainer.fullName,
-        startTime: s.startsAt.toISOString(),
-        capacity,
-        bookedCount,
-        utilizationRate,
-      };
-    });
+        return {
+          scheduleId: s.id,
+          className: s.gymClass.name,
+          instructorName: s.trainer.fullName,
+          startTime: s.startsAt.toISOString(),
+          capacity,
+          bookedCount,
+          utilizationRate,
+        };
+      },
+    );
 
     const averageUtilizationRate =
       items.length > 0 ? Math.round((totalRates / items.length) * 10) / 10 : 0;
@@ -450,8 +467,7 @@ export class ReportsService {
       trainerName: t.trainerName,
       specialization: t.specialization,
       completedSessionsCount: t.completedSessionsCount,
-      totalTrainingHours:
-        Math.round((t.totalTrainingMinutes / 60) * 10) / 10,
+      totalTrainingHours: Math.round((t.totalTrainingMinutes / 60) * 10) / 10,
     }));
 
     return {

@@ -12,6 +12,7 @@ import { QueryPtAvailabilitiesDto } from './dto/query-pt-availabilities.dto';
 import {
   BookingStatus,
   PtAvailabilityDetail,
+  TrainerSummary,
   UserRole,
 } from '@gym/contracts';
 
@@ -31,6 +32,30 @@ interface RawPtAvailabilityWithRelations {
 @Injectable()
 export class TrainersService {
   constructor(private readonly db: DatabaseService) {}
+
+  async findAllActiveTrainers(): Promise<TrainerSummary[]> {
+    const trainers = await this.db.client.employeeProfile.findMany({
+      where: {
+        user: {
+          isActive: true,
+          roles: {
+            some: {
+              role: {
+                code: UserRole.PT,
+              },
+            },
+          },
+        },
+      },
+      orderBy: { fullName: 'asc' },
+    });
+
+    return trainers.map((t) => ({
+      id: t.id,
+      fullName: t.fullName,
+      specialization: t.specialization ?? null,
+    }));
+  }
 
   async createAvailability(
     userId: string,
@@ -68,7 +93,9 @@ export class TrainersService {
     const end = new Date(dto.endsAt);
 
     if (isNaN(start.getTime()) || isNaN(end.getTime())) {
-      throw new BadRequestException('startsAt hoặc endsAt không đúng định dạng ngày giờ');
+      throw new BadRequestException(
+        'startsAt hoặc endsAt không đúng định dạng ngày giờ',
+      );
     }
 
     if (start.getTime() >= end.getTime()) {
@@ -138,7 +165,9 @@ export class TrainersService {
       orderBy: { startsAt: 'asc' },
     });
 
-    return slots.map((s: RawPtAvailabilityWithRelations) => this.mapAvailabilityDetail(s));
+    return slots.map((s: RawPtAvailabilityWithRelations) =>
+      this.mapAvailabilityDetail(s),
+    );
   }
 
   async deleteAvailability(
@@ -207,7 +236,9 @@ export class TrainersService {
     return { message: 'Xoá khung giờ rảnh thành công' };
   }
 
-  private mapAvailabilityDetail(item: RawPtAvailabilityWithRelations): PtAvailabilityDetail {
+  private mapAvailabilityDetail(
+    item: RawPtAvailabilityWithRelations,
+  ): PtAvailabilityDetail {
     return {
       id: item.id,
       trainerId: item.trainerId,

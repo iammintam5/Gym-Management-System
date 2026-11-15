@@ -60,7 +60,8 @@ export class PaymentsController {
   @Roles(UserRole.STAFF, UserRole.ADMIN)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
-    summary: 'Confirm a payment collection (marks PAID, sets cashier, syncs subscription & triggers JIT promotion)',
+    summary:
+      'Confirm a payment collection (marks PAID, sets cashier, syncs subscription & triggers JIT promotion)',
   })
   @ApiResponse({
     status: 200,
@@ -107,7 +108,8 @@ export class PaymentsController {
   })
   @ApiResponse({
     status: 200,
-    description: 'Revenue totals categorized by cash, transfer, card and transaction count',
+    description:
+      'Revenue totals categorized by cash, transfer, card and transaction count',
   })
   async getReconciliation(
     @Query() query: ReconciliationQueryDto,
@@ -116,6 +118,7 @@ export class PaymentsController {
   }
 
   @Get('payments/:id/receipt')
+  @Roles(UserRole.MEMBER, UserRole.STAFF, UserRole.ADMIN)
   @ApiOperation({
     summary: 'Retrieve digital receipt snapshot (Member owner, Staff or Admin)',
   })

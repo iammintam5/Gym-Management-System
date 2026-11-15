@@ -10,11 +10,13 @@ import { DatabaseService } from '../database/database.module';
 import {
   AuthUser,
   FreezeStatus,
+  PaymentStatus,
   PaginatedFreezesResponse,
   SubscriptionFreezeDetail,
   SubscriptionStatus,
   UserRole,
 } from '@gym/contracts';
+import { memberCodeRange } from '../common/member-code';
 import { Prisma } from '@gym/database';
 import { CreateFreezeDto } from './dto/create-freeze.dto';
 import { ReviewFreezeDto } from './dto/review-freeze.dto';
@@ -64,167 +66,137 @@ export class SubscriptionFreezesService {
 
   constructor(private readonly db: DatabaseService) {}
 
+  private readonly freezeInclude = {
+    subscription: { include: { member: true, plan: true } },
+    approver: { include: { employeeProfile: true, memberProfile: true } },
+  } as const;
+
+  private async lockSubscription(tx: Prisma.TransactionClient, id: string) {
+    const reference = await tx.subscription.findUnique({
+      where: { id },
+      select: { memberId: true },
+    });
+    if (!reference) throw new NotFoundException('Gói tập không tồn tại.');
+    await tx.$queryRaw`SELECT id FROM member_profiles WHERE id = ${reference.memberId}::uuid FOR UPDATE`;
+    await tx.$queryRaw`SELECT id FROM subscriptions WHERE id = ${id}::uuid FOR UPDATE`;
+    return tx.subscription.findUniqueOrThrow({
+      where: { id },
+      include: { member: { include: { user: true } }, plan: true },
+    });
+  }
+
+  private assertFreezable(
+    sub: {
+      status: string;
+      paymentStatus: string;
+      startDate: Date;
+      endDate: Date;
+    },
+    startsAt: Date,
+    endsAt: Date,
+    now: Date,
+  ): void {
+    if (
+      sub.status !== SubscriptionStatus.ACTIVE ||
+      sub.paymentStatus !== PaymentStatus.PAID ||
+      sub.startDate > now ||
+      sub.endDate <= now
+    ) {
+      throw new BadRequestException(
+        'Chỉ bảo lưu gói đang hoạt động và đã thanh toán đủ.',
+      );
+    }
+    const localDay = new Date(now.getTime() + 7 * 3600000)
+      .toISOString()
+      .slice(0, 10);
+    const dayStart = new Date(`${localDay}T00:00:00+07:00`);
+    if (
+      !Number.isFinite(startsAt.getTime()) ||
+      !Number.isFinite(endsAt.getTime()) ||
+      startsAt < dayStart ||
+      startsAt >= sub.endDate ||
+      endsAt <= startsAt
+    ) {
+      throw new BadRequestException(
+        'Thời gian bảo lưu không hợp lệ hoặc đã qua.',
+      );
+    }
+    const days = (endsAt.getTime() - startsAt.getTime()) / 86400000;
+    if (days < 7 || days > 60)
+      throw new BadRequestException('Thời gian bảo lưu từ 7 đến 60 ngày.');
+  }
+
   async createFreeze(
     subscriptionId: string,
     dto: CreateFreezeDto,
     user: AuthUser,
   ): Promise<SubscriptionFreezeDetail> {
-    const subscription = await this.db.client.subscription.findUnique({
-      where: { id: subscriptionId },
-      include: {
-        member: { include: { user: true } },
-        plan: true,
-      },
-    });
-
-    if (!subscription) {
-      throw new NotFoundException(`Subscription ${subscriptionId} not found`);
-    }
-
-    const isStaffOrAdmin = user.roles.some(
-      (r) => r === UserRole.STAFF || r === UserRole.ADMIN,
-    );
-
-    // If Member, verify ownership
-    if (!isStaffOrAdmin) {
-      if (subscription.member.userId !== user.id) {
-        throw new ForbiddenException(
-          'Bạn không có quyền yêu cầu bảo lưu cho gói tập này',
-        );
-      }
-    }
-
     const now = new Date();
-
-    // Invariant: Cannot freeze cancelled or expired subscriptions
-    if (subscription.status === SubscriptionStatus.CANCELLED) {
-      throw new BadRequestException('Không thể bảo lưu gói tập đã bị huỷ');
-    }
-
-    if (new Date(subscription.endDate).getTime() < now.getTime()) {
-      throw new BadRequestException('Không thể bảo lưu gói tập đã hết hạn');
-    }
-
-    if (subscription.status === SubscriptionStatus.SUSPENDED) {
-      throw new ConflictException('Gói tập hiện đang trong trạng thái bảo lưu');
-    }
-
-    // Parse and validate date ranges
-    const startDate = new Date(dto.startsAt);
-    const endDate = new Date(dto.endsAt);
-
-    if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
-      throw new BadRequestException('Ngày bắt đầu hoặc ngày kết thúc không hợp lệ');
-    }
-
-    const diffTime = endDate.getTime() - startDate.getTime();
-    if (diffTime <= 0) {
-      throw new BadRequestException('Ngày kết thúc phải sau ngày bắt đầu');
-    }
-
-    const freezeDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
-
-    // Gym policy: Minimum 7 days, maximum 60 days
-    if (freezeDays < 7) {
-      throw new BadRequestException('Thời gian bảo lưu tối thiểu là 7 ngày');
-    }
-
-    if (freezeDays > 60) {
-      throw new BadRequestException('Thời gian bảo lưu tối đa là 60 ngày');
-    }
-
-    // Invariant: Check if there is already an active or pending freeze
-    const activeOrPendingFreeze =
-      await this.db.client.subscriptionFreeze.findFirst({
+    const startsAt = new Date(dto.startsAt);
+    const endsAt = new Date(dto.endsAt);
+    const staff = user.roles.some(
+      (role) => role === UserRole.STAFF || role === UserRole.ADMIN,
+    );
+    const freeze = await this.db.client.$transaction(async (tx) => {
+      const sub = await this.lockSubscription(tx, subscriptionId);
+      if (!staff && sub.member.userId !== user.id)
+        throw new ForbiddenException(
+          'Bạn không có quyền yêu cầu bảo lưu cho gói tập này.',
+        );
+      if (!sub.member.user.isActive)
+        throw new ConflictException('Tài khoản hội viên đã ngừng hoạt động.');
+      this.assertFreezable(sub, startsAt, endsAt, now);
+      const pending = await tx.subscriptionFreeze.findFirst({
         where: {
-          subscriptionId: subscription.id,
+          subscriptionId,
           status: { in: [FreezeStatus.REQUESTED, FreezeStatus.APPROVED] },
           restoredAt: null,
         },
       });
-
-    if (activeOrPendingFreeze) {
-      throw new ConflictException(
-        'Gói tập đã có yêu cầu bảo lưu đang chờ duyệt hoặc đang có hiệu lực',
-      );
-    }
-
-    // Gym policy: Maximum 2 freezes per subscription
-    const freezeCount = await this.db.client.subscriptionFreeze.count({
-      where: {
-        subscriptionId: subscription.id,
-        status: {
-          in: [
-            FreezeStatus.REQUESTED,
-            FreezeStatus.APPROVED,
-            FreezeStatus.COMPLETED,
-          ],
-        },
-      },
-    });
-
-    if (freezeCount >= 2) {
-      throw new BadRequestException('Gói tập đã đạt giới hạn tối đa 2 lần bảo lưu');
-    }
-
-    // Determine initial status & approver
-    let initialStatus: FreezeStatus = FreezeStatus.REQUESTED;
-    let approvedBy: string | null = null;
-
-    if (isStaffOrAdmin) {
-      const autoApprove = dto.autoApprove !== false;
-      if (autoApprove) {
-        initialStatus = FreezeStatus.APPROVED;
-        approvedBy = user.id;
-      }
-    }
-
-    const freeze = await this.db.client.$transaction(
-      async (tx: Prisma.TransactionClient) => {
-        const created = await tx.subscriptionFreeze.create({
-        data: {
-          subscriptionId: subscription.id,
-          startsAt: startDate,
-          endsAt: endDate,
-          freezeDays,
-          status: initialStatus,
-          reason: dto.reason,
-          approvedBy,
-        },
-        include: {
-          subscription: {
-            include: {
-              member: true,
-              plan: true,
-            },
-          },
-          approver: {
-            include: {
-              employeeProfile: true,
-              memberProfile: true,
-            },
+      if (pending)
+        throw new ConflictException(
+          'Gói tập đã có yêu cầu bảo lưu đang chờ hoặc đã được duyệt.',
+        );
+      const count = await tx.subscriptionFreeze.count({
+        where: {
+          subscriptionId,
+          status: {
+            in: [
+              FreezeStatus.REQUESTED,
+              FreezeStatus.APPROVED,
+              FreezeStatus.COMPLETED,
+            ],
           },
         },
       });
-
-      // If approved immediately and startsAt has arrived, mark subscription SUSPENDED
-      if (
-        initialStatus === FreezeStatus.APPROVED &&
-        startDate.getTime() <= now.getTime()
-      ) {
+      if (count >= 2)
+        throw new BadRequestException(
+          'Gói tập đã đạt giới hạn tối đa 2 lần bảo lưu.',
+        );
+      const approved = staff && dto.autoApprove !== false;
+      const created = await tx.subscriptionFreeze.create({
+        data: {
+          subscriptionId,
+          startsAt,
+          endsAt,
+          freezeDays: Math.ceil(
+            (endsAt.getTime() - startsAt.getTime()) / 86400000,
+          ),
+          status: approved ? FreezeStatus.APPROVED : FreezeStatus.REQUESTED,
+          approvedBy: approved ? user.id : null,
+          reason: dto.reason,
+        },
+      });
+      if (approved && startsAt <= now)
         await tx.subscription.update({
-          where: { id: subscription.id },
+          where: { id: subscriptionId },
           data: { status: SubscriptionStatus.SUSPENDED },
         });
-      }
-
-      return created;
+      return tx.subscriptionFreeze.findUniqueOrThrow({
+        where: { id: created.id },
+        include: this.freezeInclude,
+      });
     });
-
-    this.logger.log(
-      `Created freeze request ${freeze.id} for sub ${subscriptionId} with status ${initialStatus} by ${user.id}`,
-    );
-
     return this.mapFreezeDetail(freeze as unknown as RawFreezeWithRelations);
   }
 
@@ -232,59 +204,37 @@ export class SubscriptionFreezesService {
     id: string,
     user: AuthUser,
   ): Promise<SubscriptionFreezeDetail> {
-    const freeze = await this.db.client.subscriptionFreeze.findUnique({
+    const reference = await this.db.client.subscriptionFreeze.findUnique({
       where: { id },
-      include: { subscription: true },
+      select: { subscriptionId: true },
     });
-
-    if (!freeze) {
-      throw new NotFoundException(`Freeze request ${id} not found`);
-    }
-
-    if (freeze.status !== FreezeStatus.REQUESTED) {
-      throw new ConflictException(
-        'Chỉ có thể phê duyệt yêu cầu bảo lưu ở trạng thái REQUESTED',
-      );
-    }
-
+    if (!reference)
+      throw new NotFoundException('Yêu cầu bảo lưu không tồn tại.');
     const now = new Date();
-
-    const result = await this.db.client.$transaction(
-      async (tx: Prisma.TransactionClient) => {
-        const updated = await tx.subscriptionFreeze.update({
+    const result = await this.db.client.$transaction(async (tx) => {
+      const sub = await this.lockSubscription(tx, reference.subscriptionId);
+      const freeze = await tx.subscriptionFreeze.findUniqueOrThrow({
         where: { id },
-        data: {
-          status: FreezeStatus.APPROVED,
-          approvedBy: user.id,
-        },
-        include: {
-          subscription: {
-            include: {
-              member: true,
-              plan: true,
-            },
-          },
-          approver: {
-            include: {
-              employeeProfile: true,
-              memberProfile: true,
-            },
-          },
-        },
       });
-
-      // If startsAt has arrived, mark subscription as SUSPENDED
-      if (freeze.startsAt.getTime() <= now.getTime()) {
+      if (freeze.status !== FreezeStatus.REQUESTED)
+        throw new ConflictException('Chỉ có thể duyệt yêu cầu đang chờ.');
+      this.assertFreezable(sub, freeze.startsAt, freeze.endsAt, now);
+      if (!sub.member.user.isActive)
+        throw new ConflictException('Tài khoản hội viên đã ngừng hoạt động.');
+      await tx.subscriptionFreeze.update({
+        where: { id },
+        data: { status: FreezeStatus.APPROVED, approvedBy: user.id },
+      });
+      if (freeze.startsAt <= now)
         await tx.subscription.update({
-          where: { id: freeze.subscriptionId },
+          where: { id: sub.id },
           data: { status: SubscriptionStatus.SUSPENDED },
         });
-      }
-
-      return updated;
+      return tx.subscriptionFreeze.findUniqueOrThrow({
+        where: { id },
+        include: this.freezeInclude,
+      });
     });
-
-    this.logger.log(`Approved freeze request ${id} by ${user.id}`);
     return this.mapFreezeDetail(result as unknown as RawFreezeWithRelations);
   }
 
@@ -293,160 +243,149 @@ export class SubscriptionFreezesService {
     dto: ReviewFreezeDto,
     user: AuthUser,
   ): Promise<SubscriptionFreezeDetail> {
-    const freeze = await this.db.client.subscriptionFreeze.findUnique({
+    const reference = await this.db.client.subscriptionFreeze.findUnique({
       where: { id },
+      select: { subscriptionId: true },
     });
-
-    if (!freeze) {
-      throw new NotFoundException(`Freeze request ${id} not found`);
-    }
-
-    if (freeze.status !== FreezeStatus.REQUESTED) {
-      throw new ConflictException(
-        'Chỉ có thể từ chối yêu cầu bảo lưu ở trạng thái REQUESTED',
-      );
-    }
-
-    const updated = await this.db.client.subscriptionFreeze.update({
-      where: { id },
-      data: {
-        status: FreezeStatus.REJECTED,
-        approvedBy: user.id,
-        reason: dto.reason ?? freeze.reason,
-      },
-      include: {
-        subscription: {
-          include: {
-            member: true,
-            plan: true,
-          },
+    if (!reference)
+      throw new NotFoundException('Yêu cầu bảo lưu không tồn tại.');
+    const result = await this.db.client.$transaction(async (tx) => {
+      await this.lockSubscription(tx, reference.subscriptionId);
+      const freeze = await tx.subscriptionFreeze.findUniqueOrThrow({
+        where: { id },
+      });
+      if (freeze.status !== FreezeStatus.REQUESTED)
+        throw new ConflictException('Chỉ có thể từ chối yêu cầu đang chờ.');
+      return tx.subscriptionFreeze.update({
+        where: { id },
+        data: {
+          status: FreezeStatus.REJECTED,
+          approvedBy: user.id,
+          reason: dto.reason ?? freeze.reason,
         },
-        approver: {
-          include: {
-            employeeProfile: true,
-            memberProfile: true,
-          },
-        },
-      },
+        include: this.freezeInclude,
+      });
     });
-
-    this.logger.log(`Rejected freeze request ${id} by ${user.id}`);
-    return this.mapFreezeDetail(updated as unknown as RawFreezeWithRelations);
+    return this.mapFreezeDetail(result as unknown as RawFreezeWithRelations);
   }
 
   async unfreeze(
     id: string,
     user: AuthUser,
+    targetNow?: Date,
   ): Promise<SubscriptionFreezeDetail> {
-    const freeze = await this.db.client.subscriptionFreeze.findUnique({
+    const reference = await this.db.client.subscriptionFreeze.findUnique({
       where: { id },
-      include: {
-        subscription: {
-          include: {
-            plan: true,
-            member: true,
-          },
-        },
-      },
+      select: { subscriptionId: true },
     });
-
-    if (!freeze) {
-      throw new NotFoundException(`Freeze request ${id} not found`);
-    }
-
-    // Idempotency guard: prevent double extension
-    if (
-      freeze.restoredAt !== null ||
-      freeze.status === FreezeStatus.COMPLETED
-    ) {
-      throw new ConflictException('Yêu cầu bảo lưu đã được khôi phục trước đó');
-    }
-
-    if (freeze.status !== FreezeStatus.APPROVED) {
-      throw new BadRequestException(
-        'Chỉ có thể mở lại gói tập từ trạng thái bảo lưu đã được phê duyệt',
-      );
-    }
-
-    const now = new Date();
-    const daysToExtend = freeze.freezeDays;
-    const oldEndDate = new Date(freeze.subscription.endDate);
-    const newEndDate = new Date(
-      oldEndDate.getTime() + daysToExtend * 24 * 60 * 60 * 1000,
-    );
-
-    const result = await this.db.client.$transaction(
-      async (tx: Prisma.TransactionClient) => {
-        // 1. Mark freeze COMPLETED & set restoredAt
-      const updatedFreeze = await tx.subscriptionFreeze.update({
+    if (!reference)
+      throw new NotFoundException('Yêu cầu bảo lưu không tồn tại.');
+    const now = targetNow ? new Date(targetNow) : new Date();
+    const result = await this.db.client.$transaction(async (tx) => {
+      const sub = await this.lockSubscription(tx, reference.subscriptionId);
+      const freeze = await tx.subscriptionFreeze.findUniqueOrThrow({
         where: { id },
-        data: {
-          status: FreezeStatus.COMPLETED,
-          restoredAt: now,
-        },
-        include: {
-          subscription: {
-            include: {
-              member: true,
-              plan: true,
-            },
-          },
-          approver: {
-            include: {
-              employeeProfile: true,
-              memberProfile: true,
-            },
-          },
-        },
       });
-
-      // 2. Restore subscription status to ACTIVE and extend endDate
+      if (freeze.restoredAt || freeze.status === FreezeStatus.COMPLETED)
+        throw new ConflictException('Yêu cầu bảo lưu đã được khôi phục.');
+      if (
+        freeze.status !== FreezeStatus.APPROVED ||
+        sub.status === SubscriptionStatus.CANCELLED
+      )
+        throw new BadRequestException(
+          'Yêu cầu bảo lưu hoặc gói tập không còn hợp lệ.',
+        );
+      const elapsed = Math.max(
+        0,
+        Math.min(now.getTime(), freeze.endsAt.getTime()) -
+          freeze.startsAt.getTime(),
+      );
+      const newEndDate = new Date(sub.endDate.getTime() + elapsed);
+      await tx.subscriptionFreeze.update({
+        where: { id },
+        data: { status: FreezeStatus.COMPLETED, restoredAt: now },
+      });
       await tx.subscription.update({
-        where: { id: freeze.subscriptionId },
-        data: {
-          status: SubscriptionStatus.ACTIVE,
-          endDate: newEndDate,
-        },
+        where: { id: sub.id },
+        data: { status: SubscriptionStatus.ACTIVE, endDate: newEndDate },
       });
-
-      // 3. Cascade forward any queued UPCOMING renewal subscriptions chained to this sub
-      let currentParentEndDate = newEndDate;
-      let chainedChild = await tx.subscription.findFirst({
+      let parentId = sub.id;
+      let parentEnd = newEndDate;
+      const visited = new Set<string>([parentId]);
+      let child = await tx.subscription.findFirst({
         where: {
-          previousSubscriptionId: freeze.subscriptionId,
+          previousSubscriptionId: parentId,
           status: SubscriptionStatus.UPCOMING,
         },
         include: { plan: true },
       });
-
-      while (chainedChild) {
-        const childStart = new Date(currentParentEndDate);
-        const childEnd = calculateEndDate(
-          childStart,
-          chainedChild.plan.durationDays,
-        );
+      while (child) {
+        if (visited.has(child.id))
+          throw new ConflictException('Chuỗi gia hạn không hợp lệ.');
+        visited.add(child.id);
+        const endDate = calculateEndDate(parentEnd, child.plan.durationDays);
         await tx.subscription.update({
-          where: { id: chainedChild.id },
-          data: { startDate: childStart, endDate: childEnd },
+          where: { id: child.id },
+          data: { startDate: parentEnd, endDate },
         });
-        currentParentEndDate = childEnd;
-        chainedChild = await tx.subscription.findFirst({
+        parentId = child.id;
+        parentEnd = endDate;
+        child = await tx.subscription.findFirst({
           where: {
-            previousSubscriptionId: chainedChild.id,
+            previousSubscriptionId: parentId,
             status: SubscriptionStatus.UPCOMING,
           },
           include: { plan: true },
         });
       }
-
-      return updatedFreeze;
+      return tx.subscriptionFreeze.findUniqueOrThrow({
+        where: { id },
+        include: this.freezeInclude,
+      });
     });
-
-    this.logger.log(
-      `Unfroze sub ${freeze.subscriptionId}, extended by ${daysToExtend} days (new endDate: ${newEndDate.toISOString()}) by ${user.id}`,
-    );
-
+    this.logger.log(`Restored freeze ${id} by ${user.id}`);
     return this.mapFreezeDetail(result as unknown as RawFreezeWithRelations);
+  }
+
+  async activateDueFreezes(targetNow?: Date): Promise<number> {
+    const now = targetNow ? new Date(targetNow) : new Date();
+    const due = await this.db.client.subscriptionFreeze.findMany({
+      where: {
+        status: FreezeStatus.APPROVED,
+        restoredAt: null,
+        startsAt: { lte: now },
+        endsAt: { gt: now },
+        subscription: {
+          status: SubscriptionStatus.ACTIVE,
+          paymentStatus: PaymentStatus.PAID,
+        },
+      },
+      select: { id: true, subscriptionId: true },
+    });
+    let activated = 0;
+    for (const item of due) {
+      await this.db.client.$transaction(async (tx) => {
+        const sub = await this.lockSubscription(tx, item.subscriptionId);
+        const freeze = await tx.subscriptionFreeze.findUniqueOrThrow({
+          where: { id: item.id },
+        });
+        if (
+          sub.status === SubscriptionStatus.ACTIVE &&
+          sub.paymentStatus === PaymentStatus.PAID &&
+          freeze.status === FreezeStatus.APPROVED &&
+          !freeze.restoredAt &&
+          freeze.startsAt <= now &&
+          freeze.endsAt > now
+        ) {
+          await tx.subscription.update({
+            where: { id: sub.id },
+            data: { status: SubscriptionStatus.SUSPENDED },
+          });
+          activated++;
+        }
+      });
+    }
+    return activated;
   }
 
   async findBySubscription(
@@ -506,6 +445,34 @@ export class SubscriptionFreezesService {
 
     const where: Prisma.SubscriptionFreezeWhereInput = {};
 
+    const now = new Date();
+    if (query.phase === 'Pending Review') where.status = FreezeStatus.REQUESTED;
+    if (query.phase === 'Rejected') where.status = FreezeStatus.REJECTED;
+    if (query.phase === 'Restored Early') where.status = FreezeStatus.COMPLETED;
+    if (query.phase === 'Scheduled' || query.phase === 'Currently Frozen') {
+      where.status = FreezeStatus.APPROVED;
+      where.restoredAt = null;
+      where.startsAt = query.phase === 'Scheduled' ? { gt: now } : { lte: now };
+    }
+    if (query.search?.trim()) {
+      const search = query.search.trim();
+      where.OR = [
+        {
+          subscription: {
+            member: { fullName: { contains: search, mode: 'insensitive' } },
+          },
+        },
+        {
+          subscription: {
+            plan: { name: { contains: search, mode: 'insensitive' } },
+          },
+        },
+        { reason: { contains: search, mode: 'insensitive' } },
+        ...(memberCodeRange(search)
+          ? [{ subscription: { memberId: memberCodeRange(search) } }]
+          : []),
+      ];
+    }
     if (query.status) {
       where.status = query.status;
     }
@@ -528,14 +495,25 @@ export class SubscriptionFreezesService {
         include: {
           subscription: {
             include: {
-              member: true,
-              plan: true,
+              member: {
+                select: {
+                  id: true,
+                  userId: true,
+                  fullName: true,
+                },
+              },
+              plan: {
+                select: {
+                  name: true,
+                },
+              },
             },
           },
           approver: {
-            include: {
-              employeeProfile: true,
-              memberProfile: true,
+            select: {
+              email: true,
+              employeeProfile: { select: { fullName: true } },
+              memberProfile: { select: { fullName: true } },
             },
           },
         },
@@ -553,6 +531,26 @@ export class SubscriptionFreezesService {
         totalPages: Math.ceil(total / limit) || 1,
       },
     };
+  }
+
+  async statistics() {
+    const now = new Date();
+    const [pending, frozen, restored] = await Promise.all([
+      this.db.client.subscriptionFreeze.count({
+        where: { status: FreezeStatus.REQUESTED },
+      }),
+      this.db.client.subscriptionFreeze.count({
+        where: {
+          status: FreezeStatus.APPROVED,
+          restoredAt: null,
+          startsAt: { lte: now },
+        },
+      }),
+      this.db.client.subscriptionFreeze.count({
+        where: { status: FreezeStatus.COMPLETED },
+      }),
+    ]);
+    return { pending, frozen, restored };
   }
 
   async findById(
@@ -585,10 +583,7 @@ export class SubscriptionFreezesService {
       (r) => r === UserRole.STAFF || r === UserRole.ADMIN,
     );
 
-    if (
-      !isStaffOrAdmin &&
-      freeze.subscription?.member?.userId !== user.id
-    ) {
+    if (!isStaffOrAdmin && freeze.subscription?.member?.userId !== user.id) {
       throw new ForbiddenException(
         'Bạn không có quyền xem yêu cầu bảo lưu này',
       );
@@ -597,7 +592,9 @@ export class SubscriptionFreezesService {
     return this.mapFreezeDetail(freeze as unknown as RawFreezeWithRelations);
   }
 
-  private mapFreezeDetail(raw: RawFreezeWithRelations): SubscriptionFreezeDetail {
+  private mapFreezeDetail(
+    raw: RawFreezeWithRelations,
+  ): SubscriptionFreezeDetail {
     const approverName =
       raw.approver?.employeeProfile?.fullName ??
       raw.approver?.memberProfile?.fullName ??

@@ -31,7 +31,10 @@ export class UsersService {
     updatedAt: Date;
     roles: Array<{ role: { code: string } }>;
     memberProfile?: { fullName?: string | null; phone?: string | null } | null;
-    employeeProfile?: { fullName?: string | null; phone?: string | null } | null;
+    employeeProfile?: {
+      fullName?: string | null;
+      phone?: string | null;
+    } | null;
   }): UserResponse {
     return {
       id: user.id,
@@ -55,8 +58,18 @@ export class UsersService {
             role: true,
           },
         },
-        memberProfile: true,
-        employeeProfile: true,
+        memberProfile: {
+          select: {
+            fullName: true,
+            phone: true,
+          },
+        },
+        employeeProfile: {
+          select: {
+            fullName: true,
+            phone: true,
+          },
+        },
       },
     });
 
@@ -92,10 +105,20 @@ export class UsersService {
       const search = query.search.trim();
       where.OR = [
         { email: { contains: search, mode: 'insensitive' } },
-        { memberProfile: { fullName: { contains: search, mode: 'insensitive' } } },
-        { employeeProfile: { fullName: { contains: search, mode: 'insensitive' } } },
+        {
+          memberProfile: {
+            fullName: { contains: search, mode: 'insensitive' },
+          },
+        },
+        {
+          employeeProfile: {
+            fullName: { contains: search, mode: 'insensitive' },
+          },
+        },
         { memberProfile: { phone: { contains: search, mode: 'insensitive' } } },
-        { employeeProfile: { phone: { contains: search, mode: 'insensitive' } } },
+        {
+          employeeProfile: { phone: { contains: search, mode: 'insensitive' } },
+        },
       ];
     }
 
@@ -103,7 +126,7 @@ export class UsersService {
       [query.sortBy || 'createdAt']: query.sortOrder || 'desc',
     };
 
-    const [users, total] = await this.db.client.$transaction([
+    const [users, total] = await Promise.all([
       this.db.client.user.findMany({
         where,
         skip,
@@ -115,8 +138,18 @@ export class UsersService {
               role: true,
             },
           },
-          memberProfile: true,
-          employeeProfile: true,
+          memberProfile: {
+            select: {
+              fullName: true,
+              phone: true,
+            },
+          },
+          employeeProfile: {
+            select: {
+              fullName: true,
+              phone: true,
+            },
+          },
         },
       }),
       this.db.client.user.count({ where }),
@@ -215,21 +248,20 @@ export class UsersService {
 
     if (!dto.isActive) {
       if (currentUserId === id) {
-        throw new ConflictException('Admin cannot deactivate their own account');
+        throw new ConflictException(
+          'Admin cannot deactivate their own account',
+        );
       }
 
-      const isAdmin = user.roles.some(
-        (r) => r.role.code === UserRole.ADMIN,
-      );
+      const isAdmin = user.roles.some((r) => r.role.code === UserRole.ADMIN);
 
       if (isAdmin) {
-        const activeAdminCount =
-          await this.db.client.userRoleAssignment.count({
-            where: {
-              role: { code: UserRole.ADMIN },
-              user: { isActive: true },
-            },
-          });
+        const activeAdminCount = await this.db.client.userRoleAssignment.count({
+          where: {
+            role: { code: UserRole.ADMIN },
+            user: { isActive: true },
+          },
+        });
 
         if (activeAdminCount <= 1) {
           throw new ConflictException(
@@ -271,13 +303,12 @@ export class UsersService {
         throw new ConflictException('Admin cannot remove their own ADMIN role');
       }
 
-      const activeAdminCount =
-        await this.db.client.userRoleAssignment.count({
-          where: {
-            role: { code: UserRole.ADMIN },
-            user: { isActive: true },
-          },
-        });
+      const activeAdminCount = await this.db.client.userRoleAssignment.count({
+        where: {
+          role: { code: UserRole.ADMIN },
+          user: { isActive: true },
+        },
+      });
 
       if (activeAdminCount <= 1) {
         throw new ConflictException(

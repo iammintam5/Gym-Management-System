@@ -11,6 +11,13 @@ import {
 import { PaymentStatus } from '@gym/contracts';
 
 export class CreateSubscriptionDto {
+  @ApiPropertyOptional({
+    description: 'Stable UUID for retries of the same operation',
+  })
+  @IsOptional()
+  @IsUUID()
+  idempotencyKey?: string;
+
   @ApiProperty({
     description: 'Member profile ID (UUID)',
     example: '11111111-1111-1111-1111-111111111111',
@@ -37,17 +44,18 @@ export class CreateSubscriptionDto {
   startDate?: string;
 
   @ApiPropertyOptional({
-    description: 'Payment method (e.g. CASH, TRANSFER, CARD)',
+    description: 'Payment method (CASH or TRANSFER)',
     example: 'CASH',
   })
   @IsOptional()
   @IsString()
-  @MaxLength(50)
-  paymentMethod?: string;
+  @IsEnum(['CASH', 'TRANSFER'])
+  paymentMethod?: 'CASH' | 'TRANSFER';
 
   @ApiPropertyOptional({
     enum: PaymentStatus,
-    description: 'Payment status (defaults to PAID for staff in-person registrations)',
+    description:
+      'Payment status (defaults to PAID for staff in-person registrations)',
     default: PaymentStatus.PAID,
   })
   @IsOptional()

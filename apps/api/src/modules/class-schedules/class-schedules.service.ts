@@ -14,6 +14,8 @@ import {
   ScheduleStatus,
   UserRole,
 } from '@gym/contracts';
+import type { Prisma } from '@gym/database';
+import { lockScheduleWrites } from '../common/booking-access';
 import { DatabaseService } from '../database/database.module';
 import { CreateClassScheduleDto } from './dto/create-class-schedule.dto';
 import { UpdateClassScheduleDto } from './dto/update-class-schedule.dto';
@@ -64,54 +66,67 @@ export class ClassSchedulesService {
     dto: CreateClassScheduleDto,
     actorId: string,
   ): Promise<ClassScheduleDetail> {
-    const start = new Date(dto.startsAt);
-    const end = new Date(dto.endsAt);
+    return this.db.client.$transaction(async (tx) => {
+      await lockScheduleWrites(tx);
+      const start = new Date(dto.startsAt);
+      const end = new Date(dto.endsAt);
 
-    this.validateTiming(start, end);
+      this.validateTiming(start, end);
 
-    // 1. Validate Gym Class existence and active status
-    const gymClass = await this.db.client.gymClass.findUnique({
-      where: { id: dto.classId },
-    });
-    if (!gymClass) {
-      throw new NotFoundException(`Gym class with ID "${dto.classId}" not found`);
-    }
-    if (!gymClass.isActive) {
-      throw new ConflictException(
-        'Không thể lên lịch cho bộ môn đang tạm dừng hoạt động (Cannot schedule for inactive class)',
+      // 1. Validate Gym Class existence and active status
+      const gymClass = await tx.gymClass.findUnique({
+        where: { id: dto.classId },
+      });
+      if (!gymClass) {
+        throw new NotFoundException(
+          `Gym class with ID "${dto.classId}" not found`,
+        );
+      }
+      if (!gymClass.isActive) {
+        throw new ConflictException(
+          'Không thể lên lịch cho bộ môn đang tạm dừng hoạt động (Cannot schedule for inactive class)',
+        );
+      }
+
+      // 2. Validate Trainer existence and PT role
+      await this.validateTrainer(dto.trainerId);
+
+      // 3. Trainer Conflict Prevention
+      await this.assertNoTrainerConflicts(
+        dto.trainerId,
+        start,
+        end,
+        undefined,
+        tx,
       );
-    }
 
-    // 2. Validate Trainer existence and PT role
-    await this.validateTrainer(dto.trainerId);
-
-    // 3. Trainer Conflict Prevention
-    await this.assertNoTrainerConflicts(dto.trainerId, start, end);
-
-    // 4. Create ClassSchedule
-    const created = await this.db.client.classSchedule.create({
-      data: {
-        classId: dto.classId,
-        trainerId: dto.trainerId,
-        startsAt: start,
-        endsAt: end,
-        capacity: dto.capacity,
-        status: ScheduleStatus.SCHEDULED,
-      },
-      include: {
-        gymClass: true,
-        trainer: true,
-        _count: {
-          select: { bookings: { where: { status: BookingStatus.BOOKED } } },
+      // 4. Create ClassSchedule
+      const created = await tx.classSchedule.create({
+        data: {
+          classId: dto.classId,
+          trainerId: dto.trainerId,
+          startsAt: start,
+          endsAt: end,
+          capacity: dto.capacity,
+          status: ScheduleStatus.SCHEDULED,
         },
-      },
+        include: {
+          gymClass: true,
+          trainer: true,
+          _count: {
+            select: { bookings: { where: { status: BookingStatus.BOOKED } } },
+          },
+        },
+      });
+
+      this.logger.log(
+        `Created class schedule: Class ${gymClass.name} with Trainer ${created.trainer.fullName} at ${start.toISOString()} by actor ${actorId}`,
+      );
+
+      return this.mapScheduleDetail(
+        created as unknown as RawScheduleWithRelations,
+      );
     });
-
-    this.logger.log(
-      `Created class schedule: Class ${gymClass.name} with Trainer ${created.trainer.fullName} at ${start.toISOString()} by actor ${actorId}`,
-    );
-
-    return this.mapScheduleDetail(created as unknown as RawScheduleWithRelations);
   }
 
   async findAll(
@@ -209,76 +224,140 @@ export class ClassSchedulesService {
     dto: UpdateClassScheduleDto,
     actorId: string,
   ): Promise<ClassScheduleDetail> {
-    const existing = await this.db.client.classSchedule.findUnique({
-      where: { id },
-      include: {
-        _count: {
-          select: { bookings: { where: { status: BookingStatus.BOOKED } } },
+    return this.db.client.$transaction(async (tx) => {
+      await lockScheduleWrites(tx);
+      const existing = await tx.classSchedule.findUnique({
+        where: { id },
+        include: {
+          _count: {
+            select: { bookings: { where: { status: BookingStatus.BOOKED } } },
+          },
         },
-      },
-    });
+      });
 
-    if (!existing) {
-      throw new NotFoundException(`Class schedule with ID "${id}" not found`);
-    }
+      if (!existing) {
+        throw new NotFoundException(`Class schedule with ID "${id}" not found`);
+      }
 
-    if (
-      existing.status === ScheduleStatus.CANCELLED ||
-      existing.status === ScheduleStatus.COMPLETED
-    ) {
-      throw new ConflictException(
-        `Cannot update a ${existing.status.toLowerCase()} class schedule`,
-      );
-    }
-
-    // Capacity validation
-    if (dto.capacity !== undefined) {
-      const currentBooked = existing._count.bookings;
-      if (dto.capacity < currentBooked) {
+      if (
+        existing.status === ScheduleStatus.CANCELLED ||
+        existing.status === ScheduleStatus.COMPLETED
+      ) {
         throw new ConflictException(
-          `Không thể giảm sức chứa xuống ${dto.capacity} vì đã có ${currentBooked} học viên đặt chỗ`,
+          `Cannot update a ${existing.status.toLowerCase()} class schedule`,
         );
       }
-    }
 
-    const newStart = dto.startsAt ? new Date(dto.startsAt) : existing.startsAt;
-    const newEnd = dto.endsAt ? new Date(dto.endsAt) : existing.endsAt;
-    const newTrainerId = dto.trainerId ?? existing.trainerId;
+      // Capacity validation
+      if (dto.capacity !== undefined) {
+        const currentBooked = existing._count.bookings;
+        if (dto.capacity < currentBooked) {
+          throw new ConflictException(
+            `Không thể giảm sức chứa xuống ${dto.capacity} vì đã có ${currentBooked} học viên đặt chỗ`,
+          );
+        }
+      }
 
-    if (dto.startsAt || dto.endsAt) {
-      this.validateTiming(newStart, newEnd);
-    }
+      const newStart = dto.startsAt
+        ? new Date(dto.startsAt)
+        : existing.startsAt;
+      const newEnd = dto.endsAt ? new Date(dto.endsAt) : existing.endsAt;
+      const newTrainerId = dto.trainerId ?? existing.trainerId;
 
-    if (dto.trainerId && dto.trainerId !== existing.trainerId) {
-      await this.validateTrainer(dto.trainerId);
-    }
+      if (dto.startsAt || dto.endsAt) {
+        this.validateTiming(newStart, newEnd);
+      }
 
-    if (dto.startsAt || dto.endsAt || dto.trainerId) {
-      await this.assertNoTrainerConflicts(newTrainerId, newStart, newEnd, id);
-    }
+      if (dto.trainerId && dto.trainerId !== existing.trainerId) {
+        await this.validateTrainer(dto.trainerId);
+      }
 
-    const updated = await this.db.client.classSchedule.update({
-      where: { id },
-      data: {
-        trainerId: dto.trainerId,
-        startsAt: dto.startsAt ? newStart : undefined,
-        endsAt: dto.endsAt ? newEnd : undefined,
-        capacity: dto.capacity,
-      },
-      include: {
-        gymClass: true,
-        trainer: true,
-        _count: {
-          select: { bookings: { where: { status: BookingStatus.BOOKED } } },
+      if (dto.startsAt || dto.endsAt || dto.trainerId) {
+        await this.assertNoTrainerConflicts(
+          newTrainerId,
+          newStart,
+          newEnd,
+          id,
+          tx,
+        );
+      }
+
+      if (dto.startsAt || dto.endsAt) {
+        const bookings = await tx.classBooking.findMany({
+          where: { scheduleId: id, status: BookingStatus.BOOKED },
+          include: { subscription: true },
+        });
+        const memberIds = bookings.map((booking) => booking.memberId);
+        const subscriptionIds = bookings.map(
+          (booking) => booking.subscriptionId,
+        );
+        const [classConflict, ptConflict, freeze] = await Promise.all([
+          tx.classBooking.findFirst({
+            where: {
+              memberId: { in: memberIds },
+              scheduleId: { not: id },
+              status: BookingStatus.BOOKED,
+              schedule: { startsAt: { lt: newEnd }, endsAt: { gt: newStart } },
+            },
+          }),
+          tx.ptBooking.findFirst({
+            where: {
+              memberId: { in: memberIds },
+              status: BookingStatus.BOOKED,
+              startsAt: { lt: newEnd },
+              endsAt: { gt: newStart },
+            },
+          }),
+          tx.subscriptionFreeze.findFirst({
+            where: {
+              subscriptionId: { in: subscriptionIds },
+              status: 'APPROVED',
+              restoredAt: null,
+              startsAt: { lt: newEnd },
+              endsAt: { gt: newStart },
+            },
+          }),
+        ]);
+        if (
+          classConflict ||
+          ptConflict ||
+          freeze ||
+          bookings.some(
+            (booking) =>
+              booking.subscription.startDate > newStart ||
+              booking.subscription.endDate < newEnd,
+          )
+        ) {
+          throw new ConflictException(
+            'Lịch mới xung đột hoặc nằm ngoài quyền tham gia của học viên đã đặt chỗ.',
+          );
+        }
+      }
+      const updated = await tx.classSchedule.update({
+        where: { id },
+        data: {
+          trainerId: dto.trainerId,
+          startsAt: dto.startsAt ? newStart : undefined,
+          endsAt: dto.endsAt ? newEnd : undefined,
+          capacity: dto.capacity,
         },
-      },
+        include: {
+          gymClass: true,
+          trainer: true,
+          _count: {
+            select: { bookings: { where: { status: BookingStatus.BOOKED } } },
+          },
+        },
+      });
+
+      this.logger.log(
+        `Updated class schedule ${id} by actor ${actorId}: Trainer=${newTrainerId}, Start=${newStart.toISOString()}, End=${newEnd.toISOString()}, Capacity=${updated.capacity}`,
+      );
+
+      return this.mapScheduleDetail(
+        updated as unknown as RawScheduleWithRelations,
+      );
     });
-
-    this.logger.log(
-      `Updated class schedule ${id} by actor ${actorId}: Trainer=${newTrainerId}, Start=${newStart.toISOString()}, End=${newEnd.toISOString()}, Capacity=${updated.capacity}`,
-    );
-
-    return this.mapScheduleDetail(updated as unknown as RawScheduleWithRelations);
   }
 
   async cancelSchedule(
@@ -299,16 +378,26 @@ export class ClassSchedulesService {
     }
 
     if (existing.status === ScheduleStatus.CANCELLED) {
-      throw new ConflictException('Ca dạy này đã được huỷ trước đó (Schedule already cancelled)');
+      throw new ConflictException(
+        'Ca dạy này đã được huỷ trước đó (Schedule already cancelled)',
+      );
     }
 
     if (existing.status === ScheduleStatus.COMPLETED) {
-      throw new ConflictException('Không thể huỷ ca dạy đã hoàn thành (Cannot cancel completed schedule)');
+      throw new ConflictException(
+        'Không thể huỷ ca dạy đã hoàn thành (Cannot cancel completed schedule)',
+      );
     }
 
     const now = new Date();
 
     const cancelled = await this.db.client.$transaction(async (tx) => {
+      await lockScheduleWrites(tx);
+      const current = await tx.classSchedule.findUniqueOrThrow({
+        where: { id },
+      });
+      if (current.status !== ScheduleStatus.SCHEDULED)
+        throw new ConflictException('Ca học đã được xử lý.');
       // 1. Mark schedule as CANCELLED
       const schedule = await tx.classSchedule.update({
         where: { id },
@@ -339,19 +428,21 @@ export class ClassSchedulesService {
           },
         });
 
-        await tx.subscriptionQuota.update({
+        const quota = await tx.subscriptionQuota.findUniqueOrThrow({
           where: { id: booking.quotaId },
-          data: {
-            reserved: { decrement: 1 },
-          },
         });
+        if (quota.allocated !== null)
+          await tx.subscriptionQuota.update({
+            where: { id: booking.quotaId },
+            data: { reserved: { decrement: 1 } },
+          });
 
         await tx.quotaTransaction.create({
           data: {
             quotaId: booking.quotaId,
             subscriptionId: booking.subscriptionId,
             type: QuotaTransactionType.REFUND,
-            reservedDelta: -1,
+            reservedDelta: quota.allocated === null ? 0 : -1,
             idempotencyKey: `cancel-schedule-${id}-booking-${booking.id}`,
             reason:
               dto.reason ||
@@ -368,18 +459,24 @@ export class ClassSchedulesService {
       `Cancelled class schedule ${id} (${existing.gymClass.name}) by actor ${actorId}. Reason: ${dto.reason || 'None provided'}`,
     );
 
-    return this.mapScheduleDetail(cancelled as unknown as RawScheduleWithRelations);
+    return this.mapScheduleDetail(
+      cancelled as unknown as RawScheduleWithRelations,
+    );
   }
 
   // --- Helpers ---
 
   private validateTiming(start: Date, end: Date): void {
     if (isNaN(start.getTime()) || isNaN(end.getTime())) {
-      throw new BadRequestException('Invalid date format for startsAt or endsAt');
+      throw new BadRequestException(
+        'Invalid date format for startsAt or endsAt',
+      );
     }
 
     if (start.getTime() >= end.getTime()) {
-      throw new BadRequestException('startsAt must be strictly earlier than endsAt');
+      throw new BadRequestException(
+        'startsAt must be strictly earlier than endsAt',
+      );
     }
 
     const diffMinutes = (end.getTime() - start.getTime()) / (1000 * 60);
@@ -409,7 +506,9 @@ export class ClassSchedulesService {
     }
 
     if (!employee.user.isActive) {
-      throw new BadRequestException('Trainer user account is inactive or disabled');
+      throw new BadRequestException(
+        'Trainer user account is inactive or disabled',
+      );
     }
 
     const hasPtRole = employee.user.roles.some(
@@ -427,9 +526,10 @@ export class ClassSchedulesService {
     start: Date,
     end: Date,
     excludeScheduleId?: string,
+    client: Prisma.TransactionClient = this.db.client,
   ): Promise<void> {
     // 1. Check overlapping active ClassSchedule
-    const classConflict = await this.db.client.classSchedule.findFirst({
+    const classConflict = await client.classSchedule.findFirst({
       where: {
         trainerId,
         status: ScheduleStatus.SCHEDULED,
@@ -447,7 +547,7 @@ export class ClassSchedulesService {
     }
 
     // 2. Check overlapping active PT Booking
-    const ptConflict = await this.db.client.ptBooking.findFirst({
+    const ptConflict = await client.ptBooking.findFirst({
       where: {
         trainerId,
         status: BookingStatus.BOOKED,

@@ -6,11 +6,19 @@ import {
   IsOptional,
   IsPositive,
   IsString,
+  IsUUID,
   MaxLength,
 } from 'class-validator';
 import { PaymentStatus } from '@gym/contracts';
 
 export class CreatePaymentDto {
+  @ApiPropertyOptional({
+    description: 'Stable UUID for retries of the same operation',
+  })
+  @IsOptional()
+  @IsUUID()
+  idempotencyKey?: string;
+
   @ApiProperty({
     description: 'Payment amount',
     example: 1500000,
@@ -32,12 +40,12 @@ export class CreatePaymentDto {
 
   @ApiPropertyOptional({
     description: 'Payment method',
-    enum: ['CASH', 'TRANSFER', 'CARD'],
+    enum: ['CASH', 'TRANSFER'],
     example: 'TRANSFER',
   })
   @IsOptional()
-  @IsEnum(['CASH', 'TRANSFER', 'CARD'])
-  method?: 'CASH' | 'TRANSFER' | 'CARD';
+  @IsEnum(['CASH', 'TRANSFER'])
+  method?: 'CASH' | 'TRANSFER';
 
   @ApiPropertyOptional({
     description: 'Payment status',

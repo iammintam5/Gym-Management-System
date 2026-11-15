@@ -5,7 +5,12 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { memberCodeRange } from '../common/member-code';
 import { Prisma } from '@gym/database';
+import {
+  previousStaffRequest,
+  saveStaffRequest,
+} from '../common/staff-request';
 import { DatabaseService } from '../database/database.module';
 import { CreatePaymentDto } from './dto/create-payment.dto';
 import { ConfirmPaymentDto } from './dto/confirm-payment.dto';
@@ -60,82 +65,141 @@ interface RawPaymentWithRelations {
 export class PaymentsService {
   constructor(private readonly db: DatabaseService) {}
 
+  private readonly paymentInclude = {
+    subscription: { include: { member: true, plan: true } },
+    confirmer: { include: { employeeProfile: true } },
+  } as const;
+
+  private async lockSubscription(
+    tx: Prisma.TransactionClient,
+    subscriptionId: string,
+  ) {
+    await tx.$queryRaw`SELECT id FROM subscriptions WHERE id = ${subscriptionId}::uuid FOR UPDATE`;
+    const sub = await tx.subscription.findUnique({
+      where: { id: subscriptionId },
+    });
+    if (!sub) throw new NotFoundException('Gói tập không tồn tại.');
+    return sub;
+  }
+
+  private async assertAmountAvailable(
+    tx: Prisma.TransactionClient,
+    subscriptionId: string,
+    amount: Prisma.Decimal,
+    agreedPrice: Prisma.Decimal,
+  ): Promise<void> {
+    const paid = await tx.paymentRecord.aggregate({
+      where: { subscriptionId, status: PaymentStatus.PAID },
+      _sum: { amount: true },
+    });
+    const collected = paid._sum.amount ?? new Prisma.Decimal(0);
+    if (collected.plus(amount).greaterThan(agreedPrice)) {
+      throw new ConflictException(
+        'Số tiền thu vượt số tiền còn phải thanh toán của gói tập.',
+      );
+    }
+  }
+
+  private async syncPaymentStatus(
+    tx: Prisma.TransactionClient,
+    subscriptionId: string,
+    refunded = false,
+  ): Promise<void> {
+    const sub = await tx.subscription.findUniqueOrThrow({
+      where: { id: subscriptionId },
+    });
+    const paid = await tx.paymentRecord.aggregate({
+      where: { subscriptionId, status: PaymentStatus.PAID },
+      _sum: { amount: true },
+    });
+    const total = paid._sum.amount ?? new Prisma.Decimal(0);
+    const settled = total.greaterThanOrEqualTo(sub.agreedPrice);
+    const now = new Date();
+    const activate =
+      settled &&
+      sub.status === SubscriptionStatus.UPCOMING &&
+      sub.startDate <= now &&
+      sub.endDate >= now;
+    await tx.subscription.update({
+      where: { id: subscriptionId },
+      data: {
+        paymentStatus: settled
+          ? PaymentStatus.PAID
+          : refunded && total.isZero()
+            ? PaymentStatus.REFUNDED
+            : PaymentStatus.PENDING,
+        ...(activate
+          ? { status: SubscriptionStatus.ACTIVE, activatedAt: now }
+          : {}),
+      },
+    });
+  }
+
   async createPayment(
     subscriptionId: string,
     dto: CreatePaymentDto,
     user: AuthUser,
   ): Promise<PaymentRecordDetail> {
-    const sub = await this.db.client.subscription.findUnique({
-      where: { id: subscriptionId },
-      include: {
-        member: true,
-        plan: true,
-      },
-    });
-
-    if (!sub) {
-      throw new NotFoundException(`Gói tập với ID "${subscriptionId}" không tồn tại`);
+    if (
+      dto.status &&
+      dto.status !== PaymentStatus.PAID &&
+      dto.status !== PaymentStatus.PENDING
+    ) {
+      throw new BadRequestException(
+        'Chỉ có thể tạo thanh toán PENDING hoặc PAID.',
+      );
     }
-
-    const isPaid = dto.status === PaymentStatus.PAID;
-    const now = new Date();
-
-    const payment = await this.db.client.$transaction(
-      async (tx: Prisma.TransactionClient) => {
-        const created = await tx.paymentRecord.create({
-          data: {
-            subscriptionId,
-            amount: new Prisma.Decimal(dto.amount),
-            currency: dto.currency ?? 'VND',
-            method: dto.method ?? null,
-            status: isPaid ? PaymentStatus.PAID : PaymentStatus.PENDING,
-            note: dto.note ?? null,
-            confirmedBy: isPaid ? user.id : null,
-            confirmedAt: isPaid ? now : null,
-          },
-          include: {
-            subscription: {
-              include: {
-                member: true,
-                plan: true,
-              },
-            },
-            confirmer: {
-              include: {
-                employeeProfile: true,
-              },
-            },
-          },
+    if ((dto.currency ?? 'VND') !== 'VND')
+      throw new BadRequestException('Gói tập được thanh toán bằng VND.');
+    const payload = { ...dto, subscriptionId, actorId: user.id };
+    const payment = await this.db.client.$transaction(async (tx) => {
+      const previousId = await previousStaffRequest(
+        tx,
+        dto.idempotencyKey,
+        'CREATE_PAYMENT',
+        payload,
+      );
+      if (previousId)
+        return tx.paymentRecord.findUniqueOrThrow({
+          where: { id: previousId },
+          include: this.paymentInclude,
         });
-
-        if (isPaid) {
-          await tx.subscription.update({
-            where: { id: subscriptionId },
-            data: {
-              paymentStatus: PaymentStatus.PAID,
-            },
-          });
-
-          // Check JIT Promotion
-          if (
-            sub.status === SubscriptionStatus.UPCOMING &&
-            sub.startDate.getTime() <= now.getTime() &&
-            sub.endDate.getTime() >= now.getTime()
-          ) {
-            await tx.subscription.update({
-              where: { id: subscriptionId },
-              data: {
-                status: SubscriptionStatus.ACTIVE,
-                activatedAt: now,
-              },
-            });
-          }
-        }
-
-        return created;
-      },
-    );
-
+      const sub = await this.lockSubscription(tx, subscriptionId);
+      if (sub.status === SubscriptionStatus.CANCELLED)
+        throw new ConflictException('Gói tập đã hủy.');
+      const amount = new Prisma.Decimal(dto.amount).toDecimalPlaces(2);
+      if (!amount.isFinite() || amount.lessThanOrEqualTo(0))
+        throw new BadRequestException('Số tiền phải lớn hơn 0.');
+      await this.assertAmountAvailable(
+        tx,
+        subscriptionId,
+        amount,
+        sub.agreedPrice,
+      );
+      const isPaid = dto.status === PaymentStatus.PAID;
+      const created = await tx.paymentRecord.create({
+        data: {
+          subscriptionId,
+          amount,
+          currency: 'VND',
+          method: dto.method ?? (isPaid ? 'CASH' : null),
+          status: isPaid ? PaymentStatus.PAID : PaymentStatus.PENDING,
+          note: dto.note ?? null,
+          confirmedBy: isPaid ? user.id : null,
+          confirmedAt: isPaid ? new Date() : null,
+        },
+        include: this.paymentInclude,
+      });
+      if (isPaid) await this.syncPaymentStatus(tx, subscriptionId);
+      await saveStaffRequest(
+        tx,
+        dto.idempotencyKey,
+        'CREATE_PAYMENT',
+        payload,
+        created.id,
+      );
+      return created;
+    });
     return this.mapPaymentDetail(payment as unknown as RawPaymentWithRelations);
   }
 
@@ -144,95 +208,48 @@ export class PaymentsService {
     dto: ConfirmPaymentDto,
     user: AuthUser,
   ): Promise<PaymentRecordDetail> {
-    const payment = await this.db.client.paymentRecord.findUnique({
+    const reference = await this.db.client.paymentRecord.findUnique({
       where: { id: paymentId },
-      include: {
-        subscription: {
-          include: {
-            member: true,
-            plan: true,
-          },
-        },
-      },
+      select: { subscriptionId: true },
     });
-
-    if (!payment) {
-      throw new NotFoundException(`Bản ghi thanh toán với ID "${paymentId}" không tồn tại`);
-    }
-
-    if (payment.status === PaymentStatus.PAID) {
-      throw new ConflictException(
-        'Bản ghi thanh toán này đã được xác nhận thanh toán trước đó (Payment already confirmed)',
+    if (!reference)
+      throw new NotFoundException('Bản ghi thanh toán không tồn tại.');
+    const confirmed = await this.db.client.$transaction(async (tx) => {
+      const sub = await this.lockSubscription(tx, reference.subscriptionId);
+      if (sub.status === SubscriptionStatus.CANCELLED)
+        throw new ConflictException('Gói tập đã hủy.');
+      const payment = await tx.paymentRecord.findUniqueOrThrow({
+        where: { id: paymentId },
+      });
+      if (payment.status !== PaymentStatus.PENDING)
+        throw new ConflictException(
+          'Payment already confirmed, cancelled or refunded.',
+        );
+      if (payment.currency !== 'VND')
+        throw new BadRequestException('Đơn vị tiền tệ không khớp gói tập.');
+      await this.assertAmountAvailable(
+        tx,
+        payment.subscriptionId,
+        payment.amount,
+        sub.agreedPrice,
       );
-    }
-
-    if (
-      payment.status === PaymentStatus.REFUNDED ||
-      payment.status === PaymentStatus.CANCELLED
-    ) {
-      throw new ConflictException(
-        `Không thể xác nhận thanh toán cho bản ghi có trạng thái ${payment.status}`,
-      );
-    }
-
-    const now = new Date();
-    const sub = payment.subscription;
-
-    const confirmed = await this.db.client.$transaction(
-      async (tx: Prisma.TransactionClient) => {
-        const updated = await tx.paymentRecord.update({
-          where: { id: paymentId },
-          data: {
-            status: PaymentStatus.PAID,
-            method: dto.method,
-            note: dto.note ?? payment.note,
-            confirmedBy: user.id,
-            confirmedAt: now,
-          },
-          include: {
-            subscription: {
-              include: {
-                member: true,
-                plan: true,
-              },
-            },
-            confirmer: {
-              include: {
-                employeeProfile: true,
-              },
-            },
-          },
-        });
-
-        // Sync subscription paymentStatus
-        await tx.subscription.update({
-          where: { id: payment.subscriptionId },
-          data: {
-            paymentStatus: PaymentStatus.PAID,
-          },
-        });
-
-        // JIT Promotion
-        if (
-          sub &&
-          sub.status === SubscriptionStatus.UPCOMING &&
-          sub.startDate.getTime() <= now.getTime() &&
-          sub.endDate.getTime() >= now.getTime()
-        ) {
-          await tx.subscription.update({
-            where: { id: sub.id },
-            data: {
-              status: SubscriptionStatus.ACTIVE,
-              activatedAt: now,
-            },
-          });
-        }
-
-        return updated;
-      },
+      const updated = await tx.paymentRecord.update({
+        where: { id: paymentId },
+        data: {
+          status: PaymentStatus.PAID,
+          method: dto.method,
+          note: dto.note ?? payment.note,
+          confirmedBy: user.id,
+          confirmedAt: new Date(),
+        },
+        include: this.paymentInclude,
+      });
+      await this.syncPaymentStatus(tx, payment.subscriptionId);
+      return updated;
+    });
+    return this.mapPaymentDetail(
+      confirmed as unknown as RawPaymentWithRelations,
     );
-
-    return this.mapPaymentDetail(confirmed as unknown as RawPaymentWithRelations);
   }
 
   async refundPayment(
@@ -240,72 +257,38 @@ export class PaymentsService {
     dto: RefundPaymentDto,
     _user: AuthUser,
   ): Promise<PaymentRecordDetail> {
-    const payment = await this.db.client.paymentRecord.findUnique({
+    const reference = await this.db.client.paymentRecord.findUnique({
       where: { id: paymentId },
-      include: {
-        subscription: true,
-      },
+      select: { subscriptionId: true },
     });
-
-    if (!payment) {
-      throw new NotFoundException(`Bản ghi thanh toán với ID "${paymentId}" không tồn tại`);
-    }
-
-    if (payment.status !== PaymentStatus.PAID) {
-      throw new BadRequestException(
-        `Chỉ có thể hoàn tiền cho bản ghi đã thanh toán PAID (Hiện tại: ${payment.status})`,
-      );
-    }
-
-    const refunded = await this.db.client.$transaction(
-      async (tx: Prisma.TransactionClient) => {
-        const refundNote = dto.reason
-          ? `[REFUND: ${dto.reason}]`
-          : `[REFUND: ${new Date().toISOString()}]`;
-
-        const updated = await tx.paymentRecord.update({
-          where: { id: paymentId },
-          data: {
-            status: PaymentStatus.REFUNDED,
-            note: payment.note ? `${payment.note} | ${refundNote}` : refundNote,
-          },
-          include: {
-            subscription: {
-              include: {
-                member: true,
-                plan: true,
-              },
-            },
-            confirmer: {
-              include: {
-                employeeProfile: true,
-              },
-            },
-          },
-        });
-
-        // Check if there are any remaining PAID payments for this subscription
-        const remainingPaid = await tx.paymentRecord.findFirst({
-          where: {
-            subscriptionId: payment.subscriptionId,
-            status: PaymentStatus.PAID,
-          },
-        });
-
-        if (!remainingPaid) {
-          await tx.subscription.update({
-            where: { id: payment.subscriptionId },
-            data: {
-              paymentStatus: PaymentStatus.REFUNDED,
-            },
-          });
-        }
-
-        return updated;
-      },
+    if (!reference)
+      throw new NotFoundException('Bản ghi thanh toán không tồn tại.');
+    const refunded = await this.db.client.$transaction(async (tx) => {
+      await this.lockSubscription(tx, reference.subscriptionId);
+      const payment = await tx.paymentRecord.findUniqueOrThrow({
+        where: { id: paymentId },
+      });
+      if (payment.status !== PaymentStatus.PAID)
+        throw new BadRequestException(
+          'Chỉ có thể hoàn tiền cho bản ghi đã thanh toán PAID.',
+        );
+      const refundNote = dto.reason
+        ? `[REFUND: ${dto.reason}]`
+        : `[REFUND: ${new Date().toISOString()}]`;
+      const updated = await tx.paymentRecord.update({
+        where: { id: paymentId },
+        data: {
+          status: PaymentStatus.REFUNDED,
+          note: payment.note ? `${payment.note} | ${refundNote}` : refundNote,
+        },
+        include: this.paymentInclude,
+      });
+      await this.syncPaymentStatus(tx, payment.subscriptionId, true);
+      return updated;
+    });
+    return this.mapPaymentDetail(
+      refunded as unknown as RawPaymentWithRelations,
     );
-
-    return this.mapPaymentDetail(refunded as unknown as RawPaymentWithRelations);
   }
 
   async getReceipt(paymentId: string, user: AuthUser): Promise<PaymentReceipt> {
@@ -327,7 +310,9 @@ export class PaymentsService {
     });
 
     if (!payment) {
-      throw new NotFoundException(`Bản ghi thanh toán với ID "${paymentId}" không tồn tại`);
+      throw new NotFoundException(
+        `Bản ghi thanh toán với ID "${paymentId}" không tồn tại`,
+      );
     }
 
     if (payment.status !== PaymentStatus.PAID) {
@@ -339,14 +324,16 @@ export class PaymentsService {
     // Authorization: Member must be owner, or user must be Staff/Admin
     const isMember = user.roles.includes(UserRole.MEMBER);
     const isStaffOrAdmin =
-      user.roles.includes(UserRole.STAFF) || user.roles.includes(UserRole.ADMIN);
+      user.roles.includes(UserRole.STAFF) ||
+      user.roles.includes(UserRole.ADMIN);
 
-    if (isMember && !isStaffOrAdmin) {
-      if (payment.subscription?.member?.userId !== user.id) {
-        throw new ForbiddenException(
-          'Hội viên không có quyền xem biên lai thanh toán của người khác',
-        );
-      }
+    if (
+      !isStaffOrAdmin &&
+      (!isMember || payment.subscription.member.userId !== user.id)
+    ) {
+      throw new ForbiddenException(
+        'Bạn không có quyền xem biên lai thanh toán này',
+      );
     }
 
     const dateStr = (payment.confirmedAt ?? payment.createdAt)
@@ -402,6 +389,25 @@ export class PaymentsService {
   async findAll(query: QueryPaymentsDto): Promise<PaginatedPaymentsResponse> {
     const where: Prisma.PaymentRecordWhereInput = {};
 
+    if (query.search?.trim()) {
+      const search = query.search.trim();
+      const memberRange = memberCodeRange(search);
+      const receipt = /^REC-\d{8}-([a-f0-9]{8})$/i.exec(search);
+      where.OR = [
+        {
+          subscription: {
+            member: { fullName: { contains: search, mode: 'insensitive' } },
+          },
+        },
+        {
+          subscription: {
+            plan: { name: { contains: search, mode: 'insensitive' } },
+          },
+        },
+        ...(memberRange ? [{ subscription: { memberId: memberRange } }] : []),
+        ...(receipt ? [{ id: memberCodeRange(receipt[1]!) }] : []),
+      ];
+    }
     if (query.status) {
       where.status = query.status;
     }
@@ -419,11 +425,11 @@ export class PaymentsService {
     if (query.confirmedBy) {
       where.confirmedBy = query.confirmedBy;
     }
-    if (query.from) {
-      where.createdAt = { gte: new Date(query.from) };
-    }
-    if (query.to) {
-      where.createdAt = { lte: new Date(query.to) };
+    if (query.from || query.to) {
+      where.createdAt = {
+        ...(query.from ? { gte: new Date(query.from) } : {}),
+        ...(query.to ? { lte: new Date(query.to) } : {}),
+      };
     }
 
     const page = query.page ?? 1;
@@ -437,13 +443,23 @@ export class PaymentsService {
         include: {
           subscription: {
             include: {
-              member: true,
+              member: {
+                select: {
+                  id: true,
+                  fullName: true,
+                },
+              },
               plan: true,
             },
           },
           confirmer: {
-            include: {
-              employeeProfile: true,
+            select: {
+              email: true,
+              employeeProfile: {
+                select: {
+                  fullName: true,
+                },
+              },
             },
           },
         },
@@ -469,12 +485,11 @@ export class PaymentsService {
   async reconcile(
     query: ReconciliationQueryDto,
   ): Promise<PaymentReconciliationResponse> {
-    const targetDate = query.date ? new Date(query.date) : new Date();
-    const dayStart = new Date(targetDate);
-    dayStart.setHours(0, 0, 0, 0);
-
-    const dayEnd = new Date(targetDate);
-    dayEnd.setHours(23, 59, 59, 999);
+    const localDate =
+      query.date ??
+      new Date(Date.now() + 7 * 3600000).toISOString().slice(0, 10);
+    const dayStart = new Date(`${localDate.slice(0, 10)}T00:00:00+07:00`);
+    const dayEnd = new Date(dayStart.getTime() + 86400000 - 1);
 
     const where: Prisma.PaymentRecordWhereInput = {
       status: PaymentStatus.PAID,
@@ -493,13 +508,23 @@ export class PaymentsService {
       include: {
         subscription: {
           include: {
-            member: true,
+            member: {
+              select: {
+                id: true,
+                fullName: true,
+              },
+            },
             plan: true,
           },
         },
         confirmer: {
-          include: {
-            employeeProfile: true,
+          select: {
+            email: true,
+            employeeProfile: {
+              select: {
+                fullName: true,
+              },
+            },
           },
         },
       },
@@ -529,7 +554,7 @@ export class PaymentsService {
     }
 
     return {
-      date: targetDate.toISOString().slice(0, 10),
+      date: localDate.slice(0, 10),
       totalRevenue,
       cashRevenue,
       transferRevenue,
@@ -547,20 +572,32 @@ export class PaymentsService {
       include: {
         subscription: {
           include: {
-            member: true,
+            member: {
+              select: {
+                id: true,
+                fullName: true,
+              },
+            },
             plan: true,
           },
         },
         confirmer: {
-          include: {
-            employeeProfile: true,
+          select: {
+            email: true,
+            employeeProfile: {
+              select: {
+                fullName: true,
+              },
+            },
           },
         },
       },
     });
 
     if (!payment) {
-      throw new NotFoundException(`Bản ghi thanh toán với ID "${id}" không tồn tại`);
+      throw new NotFoundException(
+        `Bản ghi thanh toán với ID "${id}" không tồn tại`,
+      );
     }
 
     return this.mapPaymentDetail(payment as unknown as RawPaymentWithRelations);

@@ -7,16 +7,44 @@ const { createRequire } = require('node:module');
 const { pathToFileURL } = require('node:url');
 const { spawn, spawnSync, execFileSync } = require('node:child_process');
 
+/** Resolve native Linux binaries against the host's installed shared libraries. */
+function systemPostgresBin() {
+  const result = spawnSync('pg_config', ['--bindir'], {
+    encoding: 'utf8',
+    timeout: 10000,
+  });
+  if (result.status !== 0) {
+    throw new Error(
+      'Linux API tests require native PostgreSQL server binaries and pg_config on PATH',
+    );
+  }
+  const directory = result.stdout.trim();
+  if (!path.isAbsolute(directory))
+    throw new Error(
+      'pg_config returned an invalid PostgreSQL binary directory',
+    );
+  for (const executable of ['initdb', 'postgres', 'pg_ctl']) {
+    fs.accessSync(path.join(directory, executable), fs.constants.X_OK);
+  }
+  return directory;
+}
+
 /** Never reads DATABASE_URL: always creates a fresh localhost-only cluster. */
 async function localPostgres() {
   const resolver = createRequire(require.resolve('embedded-postgres'));
-  const binaries = await import(
-    pathToFileURL(
-      resolver.resolve(
-        `@embedded-postgres/${os.platform() === 'win32' ? 'windows' : os.platform()}-${os.arch()}`,
-      ),
-    ).href
-  );
+  let binaryDirectory;
+  if (os.platform() === 'linux') {
+    binaryDirectory = systemPostgresBin();
+  } else {
+    const binaries = await import(
+      pathToFileURL(
+        resolver.resolve(
+          `@embedded-postgres/${os.platform() === 'win32' ? 'windows' : os.platform()}-${os.arch()}`,
+        ),
+      ).href
+    );
+    binaryDirectory = path.dirname(binaries.initdb);
+  }
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'aura-face-pg-'));
   const probe = net.createServer();
   await new Promise((resolve) => probe.listen(0, '127.0.0.1', resolve));
@@ -24,7 +52,7 @@ async function localPostgres() {
   await new Promise((resolve) => probe.close(resolve));
   // Windows PostgreSQL re-executes initdb through an ANSI path; the repository may contain Unicode.
   const native = path.join(directory, 'native');
-  const sourceNative = path.resolve(path.dirname(binaries.initdb), '..');
+  const sourceNative = path.resolve(binaryDirectory, '..');
   if (os.platform() === 'win32') {
     // Node's recursive copy crashes on some Windows/Unicode paths; use literal-path copy.
     execFileSync(
@@ -44,9 +72,16 @@ async function localPostgres() {
         },
       },
     );
-  } else fs.cpSync(sourceNative, native, { recursive: true });
+    binaryDirectory = path.join(native, 'bin');
+  } else if (os.platform() !== 'linux') {
+    fs.cpSync(sourceNative, native, { recursive: true });
+    binaryDirectory = path.join(native, 'bin');
+  }
   const executable = (name) =>
-    path.join(native, 'bin', name + (os.platform() === 'win32' ? '.exe' : ''));
+    path.join(
+      binaryDirectory,
+      name + (os.platform() === 'win32' ? '.exe' : ''),
+    );
   const dataDirectory = path.join(directory, 'data');
   const initialized = spawnSync(
     executable('initdb'),
@@ -73,6 +108,7 @@ async function localPostgres() {
       '127.0.0.1',
       '-p',
       String(port),
+      ...(os.platform() === 'win32' ? [] : ['-k', directory]),
       '-c',
       'shared_buffers=16MB',
       '-c',

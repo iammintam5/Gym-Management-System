@@ -12,6 +12,18 @@ import {
 } from 'class-validator';
 
 export class QueryMembersDto {
+  @ApiPropertyOptional({
+    description:
+      'Return list-only subscription summaries for the staff directory',
+    default: false,
+  })
+  @IsOptional()
+  @Transform(({ value }) =>
+    value === 'true' ? true : value === 'false' ? false : value,
+  )
+  @IsBoolean()
+  summary?: boolean;
+
   @IsOptional()
   @IsIn(['All', 'Active', 'Upcoming', 'Frozen', 'Expired', 'None'])
   directoryStatus?: string;

@@ -88,8 +88,8 @@ export class ClassSchedulesService {
         );
       }
 
-      // 2. Validate Trainer existence and PT role
-      await this.validateTrainer(dto.trainerId);
+      // 2. Validate Trainer existence, TRAINER role, and class teaching capability
+      await this.validateTrainer(dto.trainerId, tx);
 
       // 3. Trainer Conflict Prevention
       await this.assertNoTrainerConflicts(
@@ -269,7 +269,7 @@ export class ClassSchedulesService {
       }
 
       if (dto.trainerId && dto.trainerId !== existing.trainerId) {
-        await this.validateTrainer(dto.trainerId);
+        await this.validateTrainer(dto.trainerId, tx);
       }
 
       if (dto.startsAt || dto.endsAt || dto.trainerId) {
@@ -291,21 +291,13 @@ export class ClassSchedulesService {
         const subscriptionIds = bookings.map(
           (booking) => booking.subscriptionId,
         );
-        const [classConflict, ptConflict, freeze] = await Promise.all([
+        const [classConflict, freeze] = await Promise.all([
           tx.classBooking.findFirst({
             where: {
               memberId: { in: memberIds },
               scheduleId: { not: id },
               status: BookingStatus.BOOKED,
               schedule: { startsAt: { lt: newEnd }, endsAt: { gt: newStart } },
-            },
-          }),
-          tx.ptBooking.findFirst({
-            where: {
-              memberId: { in: memberIds },
-              status: BookingStatus.BOOKED,
-              startsAt: { lt: newEnd },
-              endsAt: { gt: newStart },
             },
           }),
           tx.subscriptionFreeze.findFirst({
@@ -320,7 +312,6 @@ export class ClassSchedulesService {
         ]);
         if (
           classConflict ||
-          ptConflict ||
           freeze ||
           bookings.some(
             (booking) =>
@@ -487,8 +478,11 @@ export class ClassSchedulesService {
     }
   }
 
-  private async validateTrainer(trainerId: string): Promise<void> {
-    const employee = await this.db.client.employeeProfile.findUnique({
+  private async validateTrainer(
+    trainerId: string,
+    client: Prisma.TransactionClient = this.db.client,
+  ): Promise<void> {
+    const employee = await client.employeeProfile.findUnique({
       where: { id: trainerId },
       include: {
         user: {
@@ -512,11 +506,17 @@ export class ClassSchedulesService {
     }
 
     const hasPtRole = employee.user.roles.some(
-      (r) => r.role.code === UserRole.PT,
+      (r) => r.role.code === UserRole.TRAINER,
     );
     if (!hasPtRole) {
       throw new BadRequestException(
-        `Nhân viên "${employee.fullName}" không có chuyên môn/vai trò Huấn luyện viên (PT role required)`,
+        `Nhân viên "${employee.fullName}" không có chuyên môn/vai trò Huấn luyện viên (TRAINER role required)`,
+      );
+    }
+
+    if (!employee.canTeachClasses) {
+      throw new BadRequestException(
+        `Huấn luyện viên "${employee.fullName}" hiện không nhận lịch dạy lớp nhóm mới`,
       );
     }
   }
@@ -546,21 +546,7 @@ export class ClassSchedulesService {
       );
     }
 
-    // 2. Check overlapping active PT Booking
-    const ptConflict = await client.ptBooking.findFirst({
-      where: {
-        trainerId,
-        status: BookingStatus.BOOKED,
-        startsAt: { lt: end },
-        endsAt: { gt: start },
-      },
-    });
-
-    if (ptConflict) {
-      throw new ConflictException(
-        'Huấn luyện viên đã có lịch dạy PT 1-1 vào khung giờ này (Trainer conflict with existing PT booking)',
-      );
-    }
+    // Retired PT records remain historical and do not block group classes.
   }
 
   private mapScheduleDetail(

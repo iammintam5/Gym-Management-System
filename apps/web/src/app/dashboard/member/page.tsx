@@ -5,7 +5,6 @@ import { formatDurationVi } from '@/lib/formatters';
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   CreditCard,
-  Dumbbell,
   Calendar,
   Activity,
   Lock,
@@ -122,18 +121,6 @@ export default function MemberPassAndPlanPage() {
     used: 0,
   });
 
-  const [ptQuota, setPtQuota] = useState<{
-    allocated: number | null;
-    available: number | null;
-    reserved: number;
-    used: number;
-  }>({
-    allocated: 0,
-    available: 0,
-    reserved: 0,
-    used: 0,
-  });
-
   const [visits, setVisits] = useState<ReadonlyArray<MemberVisitRow>>([]);
   const [copiedMemberCode, setCopiedMemberCode] = useState(false);
   const hasLoadedRef = useRef(false);
@@ -182,7 +169,6 @@ export default function MemberPassAndPlanPage() {
           freezesUsed: 0,
         });
         setClassQuota({ allocated: 0, available: 0, reserved: 0, used: 0 });
-        setPtQuota({ allocated: 0, available: 0, reserved: 0, used: 0 });
       }
       if (meRes.status === 'fulfilled') {
         const me = meRes.value;
@@ -256,15 +242,6 @@ export default function MemberPassAndPlanPage() {
             used: cls.used,
           });
         }
-        const pt = quotasRes.value.find((q) => q.service === 'PT');
-        if (pt) {
-          setPtQuota({
-            allocated: pt.allocated,
-            available: pt.remaining,
-            reserved: pt.reserved,
-            used: pt.used,
-          });
-        }
       }
 
       if (checkinsRes.status === 'fulfilled') {
@@ -304,10 +281,6 @@ export default function MemberPassAndPlanPage() {
     classQuota.allocated === null
       ? 'Không giới hạn'
       : `${classQuota.available ?? 0} / ${classQuota.allocated}`;
-  const ptQuotaDisplay =
-    ptQuota.allocated === null
-      ? 'Không giới hạn'
-      : `${ptQuota.available ?? 0} / ${ptQuota.allocated}`;
 
   const classQuotaItem: SubscriptionQuotaDetail = {
     id: 'quota-class',
@@ -319,19 +292,6 @@ export default function MemberPassAndPlanPage() {
     used: classQuota.used,
     reserved: classQuota.reserved,
     remaining: classQuota.available,
-    updatedAt: '',
-  };
-
-  const ptQuotaItem: SubscriptionQuotaDetail = {
-    id: 'quota-pt',
-    subscriptionId: activePlan.id,
-    service: ServiceTypeCode.PT,
-    serviceName: 'Huấn luyện viên 1-1 (PT)',
-    allocated: ptQuota.allocated,
-    unlimited: ptQuota.allocated === null,
-    used: ptQuota.used,
-    reserved: ptQuota.reserved,
-    remaining: ptQuota.available,
     updatedAt: '',
   };
 
@@ -349,7 +309,7 @@ export default function MemberPassAndPlanPage() {
           href="/dashboard/member/schedule"
           className="inline-flex h-10 items-center gap-2 self-start rounded-xl bg-[#FF5500] px-4 text-[13px] font-semibold text-white shadow-[0_8px_20px_rgba(255,85,0,0.25)] transition-colors hover:bg-[#E64D00] sm:self-auto"
         >
-          <span>Đặt lịch Group Class &amp; PT</span>
+          <span>Đặt lịch lớp nhóm</span>
           <ArrowRight className="h-4 w-4" />
         </Link>
       </div>
@@ -362,7 +322,7 @@ export default function MemberPassAndPlanPage() {
       {!loading && !loadError && (
         <>
           {/* Row 1: 4 IronGym KPI Cards */}
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
             <div className="rounded-2xl border border-white/[0.06] bg-[#141418] p-5">
               <div className="flex items-center gap-2.5">
                 <div className="flex h-8 w-8 items-center justify-center rounded-full bg-white/[0.05] text-zinc-300">
@@ -402,30 +362,6 @@ export default function MemberPassAndPlanPage() {
                 <span className="rounded-full bg-white/5 px-2.5 py-0.5 text-[13px] font-semibold text-zinc-300">
                   {classQuota.allocated === null ||
                   (classQuota.available ?? 0) > 0
-                    ? 'Còn lượt'
-                    : 'Hết lượt'}
-                </span>
-              </div>
-            </div>
-
-            <div className="rounded-2xl border border-white/[0.06] bg-[#141418] p-5">
-              <div className="flex items-center gap-2.5">
-                <div className="flex h-8 w-8 items-center justify-center rounded-full bg-white/[0.05] text-zinc-300">
-                  <Dumbbell className="h-4 w-4" />
-                </div>
-                <span className="text-sm font-medium text-zinc-300">
-                  Buổi tập PT 1-1
-                </span>
-              </div>
-              <div className="mt-4 font-display text-3xl font-bold tabular-nums text-white">
-                {ptQuotaDisplay}
-              </div>
-              <div className="mt-3 flex items-center justify-between">
-                <span className="text-[13px] tabular-nums text-zinc-500">
-                  Đang giữ chỗ: {ptQuota.reserved} buổi
-                </span>
-                <span className="rounded-full bg-white/5 px-2.5 py-0.5 text-[13px] font-semibold text-zinc-300">
-                  {ptQuota.allocated === null || (ptQuota.available ?? 0) > 0
                     ? 'Còn lượt'
                     : 'Hết lượt'}
                 </span>
@@ -602,10 +538,6 @@ export default function MemberPassAndPlanPage() {
               <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <QuotaMeter
                   quota={classQuotaItem}
-                  className="border-white/[0.06] bg-[#18181C]"
-                />
-                <QuotaMeter
-                  quota={ptQuotaItem}
                   className="border-white/[0.06] bg-[#18181C]"
                 />
               </div>

@@ -5,7 +5,7 @@
 - **Kiến trúc**: Monorepo quản lý bằng **Turborepo** + **pnpm workspaces**.
 - **Backend API (`apps/api`)**: NestJS 11, TypeScript 5.9 (Strict mode 100%), Swagger OpenAPI (`/api/docs`), Passport/JWT, Class Validator, NestJS Schedule (Cron).
 - **Frontend Web (`apps/web`)**: Next.js 16 (App Router), React 19, Tailwind CSS.
-- **Cơ sở dữ liệu (`packages/database`)**: Prisma 7, PostgreSQL 17, Redis 7 (Token blacklist & Cache).
+- **Cơ sở dữ liệu (`packages/database`)**: Prisma 7, PostgreSQL trên Supabase. JWT và phiên đăng nhập do API quản lý; cache danh mục nằm trong tiến trình API.
 - **Hợp đồng dữ liệu chung (`packages/contracts`)**: Nơi chứa toàn bộ Enums, Types, DTO Interfaces dùng chung giữa Backend và Frontend (Single Source of Truth).
 
 ---
@@ -14,7 +14,7 @@
 1. **Contracts-First**: Mọi thay đổi về Model, DTO, Type, Enum bắt buộc phải định nghĩa tại `@gym/contracts` trước khi code Controller/Service trong `@gym/api` hoặc Component trong `@gym/web`.
 2. **ACID Transaction Tuyệt đối**: Các nghiệp vụ làm thay đổi nhiều bảng (ví dụ: Check-in trừ quota, Đặt lịch giữ chỗ, Huỷ gói cascade, Mua gói kèm tạo payment, Bảo lưu gói dời hạn, Điểm danh) BẮT BUỘC bọc trong `this.db.client.$transaction`.
 3. **Idempotency**: Mọi giao dịch biến động Quota phải có `idempotencyKey` duy nhất để chống trừ lượt trùng lặp do mạng hoặc retry.
-4. **RBAC Chặt chẽ**: Bảo vệ endpoint bằng `@Roles(...)` decorator và `@CurrentUser()`. Có 4 vai trò rõ ràng: `ADMIN`, `STAFF`, `PT`, `MEMBER`.
+4. **RBAC Chặt chẽ**: Bảo vệ endpoint bằng `@Roles(...)` decorator và `@CurrentUser()`. Có 4 vai trò rõ ràng: `ADMIN`, `STAFF`, `TRAINER`, `MEMBER`.
 5. **Đồng bộ Schema**: Sau khi sửa `packages/database/prisma/schema.prisma`, phải chạy `pnpm --filter @gym/database db:generate` và `pnpm --filter @gym/contracts build`.
 
 ---
@@ -22,7 +22,7 @@
 ### 3. QUY TẮC NGHIỆP VỤ PHÒNG GYM CỐT LÕI (DOMAIN RULES)
 - **Mã định danh tự sinh chuẩn hóa**:
   * Hội viên: `MEM-XXXXXXXX`
-  * Nhân viên / PT: `EMP-XXXXXXXX`
+  * Nhân viên / Huấn luyện viên (`TRAINER`): `EMP-XXXXXXXX`
   * Biên lai thanh toán: `REC-YYYYMMDD-XXXX`
 - **Ảnh thẻ định danh hội viên (`idPhotoUrl`)**: 
   * Là ảnh nhận diện tại cổng quẹt thẻ, do Lễ tân chụp qua Webcam tại quầy (hoặc qua camera trực tiếp).
@@ -41,15 +41,15 @@
   * Có cơ chế **Anti-passback 5 phút** chống quẹt thẻ liên tiếp cho người khác mượn vào cùng.
 - **Chính sách Huỷ lịch đặt chỗ (Cancellation Policies)**:
   * Lớp học nhóm (`ClassBooking`): Cho phép hội viên tự huỷ trước giờ học tối thiểu **2 tiếng**.
-  * Lịch tập 1-1 (`PtBooking`): Cho phép hội viên tự huỷ trước giờ tập tối thiểu **6 tiếng**.
+  * PT 1-1 đã ngừng cung cấp: không bán, phân công hoặc đặt lịch mới; chỉ giữ dữ liệu cũ để tra cứu và đối chiếu tài chính.
 - **Quản lý Xếp ca & Chống xung đột Lịch (Scheduling & Conflicts)**:
   * Thời lượng mỗi ca học nhóm từ **30 đến 180 phút**.
-  * Chống trùng chéo 2 chiều: Huấn luyện viên không được dạy 2 ca trùng giờ (cả lớp nhóm lẫn lịch PT 1-1). Hội viên không thể đặt 2 lịch tập cùng khung giờ.
+  * Huấn luyện viên không được dạy 2 lớp nhóm trùng giờ. Hội viên không thể đặt 2 lớp cùng khung giờ; lịch PT cũ không giữ chỗ trong lịch lớp đang hoạt động.
 - **Bảo lưu gói tập (Subscription Freezes)**:
   * Thời hạn 7 - 60 ngày, tối đa 2 lần/gói.
   * Tạm khóa cổng (`SUSPENDED`). Khi mở bảo lưu (`restoredAt`), tự động cộng bù số ngày đã nghỉ vào `endDate` và dời chuỗi gia hạn kế tiếp.
 - **Thanh toán & Thu ngân (Payments & Billing)**:
-  * Hỗ trợ `CASH`, `TRANSFER`, `CARD`. Xuất biên lai `REC-YYYYMMDD-XXXX`.
+  * Thanh toán mới hỗ trợ `CASH`, `TRANSFER` (dữ liệu `CARD` cũ vẫn giữ để đọc và báo cáo). Xuất biên lai `REC-YYYYMMDD-XXXX`.
   * Chỉ `ADMIN` mới có quyền duyệt hoàn tiền (`REFUND`).
 
 ---
@@ -80,4 +80,10 @@ Khi xây dựng giao diện trên `@gym/web` (Aura Gym — Dark `#09090B` + Fier
 3. ❌ **KHÔNG viết văn mô tả tính năng trong Dashboard**: Trong `/dashboard/*`, đi thẳng vào **Bảng dữ liệu (`Table`), Thanh công cụ tìm kiếm/lọc (`Toolbar`), Form thao tác và Số liệu KPI tối giản**. Không tạo các card chỉ để "giới thiệu chức năng".
 4. ❌ **KHÔNG thêm dòng chú thích phụ (`sublabel`) trong Sidebar/Menu**: Thanh điều hướng giữ gọn gàng, chỉ gồm `Icon + Nhãn ngắn gọn 1–3 từ`.
 5. ❌ **KHÔNG dùng hộp icon/con số giả lập thay cho Hình ảnh thật trên trang Public/Auth**: Trang Landing Page và Login phải ưu tiên nhiếp ảnh phòng tập tương phản cao (B&W / Dark Moody) và câu chữ cô đọng (tối đa 1–2 dòng mỗi khối).
+
+---
+
+### 7. QUY TẮC QUẢN LÝ GIT & COMMIT (GIT WORKFLOW RULES)
+1. ❌ **KHÔNG tự ý `git commit` hoặc `git push`**: Sau khi code và kiểm tra `typecheck` / `lint` / `build` xong, Agent BẮT BUỘC phải dừng lại, liệt kê rõ tên nhánh kèm các lệnh/nội dung commit dự kiến để hỏi ý kiến người dùng trước. Chỉ khi người dùng xác nhận đồng ý thì mới được thực thi.
+2. ❌ **KHÔNG đưa thư mục `docs/` lên Git**: Mọi tài liệu phân tích, lộ trình hoặc wireframe trong `docs/` chỉ lưu ở local, tuyệt đối không `git add` hoặc `git push` lên remote.
 

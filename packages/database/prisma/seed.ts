@@ -71,17 +71,24 @@ async function seed() {
   console.log('🌱 Starting clean database seeding...');
 
   // 1. Seed 4 Roles
+  const roleSpecs = [
+    { code: UserRole.ADMIN, name: 'Quản trị viên' },
+    { code: UserRole.STAFF, name: 'Nhân viên' },
+    { code: UserRole.TRAINER, name: 'Huấn luyện viên' },
+    { code: UserRole.MEMBER, name: 'Hội viên' },
+  ] as const;
+
   const roles = await Promise.all(
-    Object.values(UserRole).map((code) =>
+    roleSpecs.map((r) =>
       prisma.role.upsert({
-        where: { code },
-        update: { name: code },
-        create: { code, name: code },
+        where: { code: r.code },
+        update: { name: r.name },
+        create: { code: r.code, name: r.name },
       }),
     ),
   );
   const roleMap = new Map(roles.map((r) => [r.code, r.id]));
-  console.log('✅ Roles seeded (ADMIN, STAFF, PT, MEMBER)');
+  console.log('✅ Roles seeded (ADMIN, STAFF, TRAINER, MEMBER)');
 
   // 2. Seed 3 Service Types with human-readable names
   const serviceTypeSpecs = [
@@ -116,7 +123,7 @@ async function seed() {
     bcrypt.hash('Member@123456', saltRounds),
   ]);
 
-  // 4. Seed Admin + Staff + 4 PT Coaches
+  // 4. Seed Admin + Staff + 4 group-class instructors
   const adminUser = await prisma.user.create({
     data: {
       id: '10000100-0000-4000-8000-000000000100',
@@ -230,7 +237,7 @@ async function seed() {
         passwordHash: ptPasswordHash,
         isActive: true,
         roles: {
-          create: { roleId: roleMap.get(UserRole.PT)! },
+          create: { roleId: roleMap.get(UserRole.TRAINER)! },
         },
         employeeProfile: {
           create: {
@@ -238,6 +245,9 @@ async function seed() {
             fullName: pt.fullName,
             phone: pt.phone,
             specialization: pt.specialization,
+            specialties: [pt.specialization],
+            canTeachClasses: true,
+            canCoachPt: false,
             hiredAt: pt.hiredAt,
           },
         },
@@ -343,7 +353,7 @@ async function seed() {
       id: '30000001-0000-4000-8000-000000000001',
       name: 'AURA BASIC',
       description:
-        'Gói tập tiêu chuẩn 1 tháng gồm toàn bộ khu vực Full Gym, 8 buổi Group Class và 1 buổi PT 1-1.',
+        'Gói tập tiêu chuẩn 1 tháng gồm toàn bộ khu vực Full Gym, 8 buổi Group Class.',
       durationDays: 30,
       price: 590000,
       isActive: true,
@@ -351,7 +361,6 @@ async function seed() {
         create: [
           { serviceTypeId: serviceTypeMap.get('GYM_ACCESS')!, allocated: null },
           { serviceTypeId: serviceTypeMap.get('CLASS')!, allocated: 8 },
-          { serviceTypeId: serviceTypeMap.get('PT')!, allocated: 1 },
         ],
       },
     },
@@ -362,7 +371,7 @@ async function seed() {
       id: '30000002-0000-4000-8000-000000000002',
       name: 'AURA PRO',
       description:
-        'Gói tập 3 tháng không giới hạn Check-in Full Gym, 16 buổi Group Class và 8 buổi kèm riêng PT 1-1.',
+        'Gói tập 3 tháng không giới hạn Check-in Full Gym, 16 buổi Group Class.',
       durationDays: 90,
       price: 1490000,
       isActive: true,
@@ -370,7 +379,6 @@ async function seed() {
         create: [
           { serviceTypeId: serviceTypeMap.get('GYM_ACCESS')!, allocated: null },
           { serviceTypeId: serviceTypeMap.get('CLASS')!, allocated: 16 },
-          { serviceTypeId: serviceTypeMap.get('PT')!, allocated: 8 },
         ],
       },
     },
@@ -380,8 +388,7 @@ async function seed() {
     data: {
       id: '30000003-0000-4000-8000-000000000003',
       name: 'AURA ELITE',
-      description:
-        'Đặc quyền VIP 12 tháng toàn diện với 36 buổi Group Class và 24 buổi kèm riêng PT 1-1.',
+      description: 'Đặc quyền VIP 12 tháng toàn diện với 36 buổi Group Class.',
       durationDays: 365,
       price: 4500000,
       isActive: true,
@@ -389,7 +396,6 @@ async function seed() {
         create: [
           { serviceTypeId: serviceTypeMap.get('GYM_ACCESS')!, allocated: null },
           { serviceTypeId: serviceTypeMap.get('CLASS')!, allocated: 36 },
-          { serviceTypeId: serviceTypeMap.get('PT')!, allocated: 24 },
         ],
       },
     },
@@ -431,13 +437,6 @@ async function seed() {
             allocated: 16,
             reserved: 2,
             used: 9,
-          },
-          {
-            id: '50000003-0000-4000-8000-000000000003',
-            serviceTypeId: serviceTypeMap.get('PT')!,
-            allocated: 8,
-            reserved: 1,
-            used: 4,
           },
         ],
       },
@@ -482,12 +481,6 @@ async function seed() {
           {
             serviceTypeId: serviceTypeMap.get('CLASS')!,
             allocated: 36,
-            reserved: 0,
-            used: 0,
-          },
-          {
-            serviceTypeId: serviceTypeMap.get('PT')!,
-            allocated: 24,
             reserved: 0,
             used: 0,
           },
@@ -555,13 +548,6 @@ async function seed() {
             reserved: 1,
             used: 5,
           },
-          {
-            id: '50000006-0000-4000-8000-000000000006',
-            serviceTypeId: serviceTypeMap.get('PT')!,
-            allocated: 1,
-            reserved: 0,
-            used: 1,
-          },
         ],
       },
       payments: {
@@ -608,12 +594,6 @@ async function seed() {
             allocated: 16,
             reserved: 0,
             used: 6,
-          },
-          {
-            serviceTypeId: serviceTypeMap.get('PT')!,
-            allocated: 8,
-            reserved: 0,
-            used: 2,
           },
         ],
       },
@@ -677,13 +657,6 @@ async function seed() {
             reserved: 1,
             used: 4,
           },
-          {
-            id: '50000009-0000-4000-8000-000000000009',
-            serviceTypeId: serviceTypeMap.get('PT')!,
-            allocated: 24,
-            reserved: 1,
-            used: 3,
-          },
         ],
       },
       payments: {
@@ -731,12 +704,6 @@ async function seed() {
             reserved: 0,
             used: 3,
           },
-          {
-            serviceTypeId: serviceTypeMap.get('PT')!,
-            allocated: 1,
-            reserved: 0,
-            used: 0,
-          },
         ],
       },
       payments: {
@@ -759,18 +726,6 @@ async function seed() {
   // 8. Seed Quota Transactions for sub1
   await prisma.quotaTransaction.createMany({
     data: [
-      {
-        quotaId: '50000003-0000-4000-8000-000000000003',
-        subscriptionId: sub1.id,
-        type: QuotaTransactionType.RESERVE,
-        allocatedDelta: 0,
-        reservedDelta: 1,
-        usedDelta: 0,
-        idempotencyKey: 'seed:qtx:pt-reserve-1',
-        referenceType: 'PT_BOOKING',
-        reason: 'Giữ chỗ ca tập PT 1-1 với HLV Trần Quốc Bảo',
-        createdBy: '20001024-0000-4000-8000-000000001024',
-      },
       {
         quotaId: '50000002-0000-4000-8000-000000000002',
         subscriptionId: sub1.id,
@@ -953,61 +908,7 @@ async function seed() {
     ],
   });
 
-  // 11. Seed PT Availabilities & PT Bookings
-  const ptSlot1Start = addDaysWithTime(now, 1, 9, 0);
-  const ptSlot1End = addDaysWithTime(now, 1, 10, 0);
-  const ptSlot2Start = addDaysWithTime(now, 1, 15, 0);
-  const ptSlot2End = addDaysWithTime(now, 1, 16, 0);
-  const ptSlot3Start = addDaysWithTime(now, 2, 10, 0);
-  const ptSlot3End = addDaysWithTime(now, 2, 11, 0);
-
-  const avail1 = await prisma.ptAvailability.create({
-    data: {
-      id: '83000001-0000-4000-8000-000000000001',
-      trainerId: createdTrainers[0]!.id, // Trần Quốc Bảo
-      startsAt: ptSlot1Start,
-      endsAt: ptSlot1End,
-      isAvailable: false,
-      note: 'Tập phản xạ đích đấm & bộ pháp Boxing 1-1',
-    },
-  });
-
-  await prisma.ptAvailability.createMany({
-    data: [
-      {
-        id: '83000002-0000-4000-8000-000000000002',
-        trainerId: createdTrainers[0]!.id,
-        startsAt: ptSlot2Start,
-        endsAt: ptSlot2End,
-        isAvailable: true,
-        note: 'Slot trống PT 1-1 buổi chiều',
-      },
-      {
-        id: '83000003-0000-4000-8000-000000000003',
-        trainerId: createdTrainers[1]!.id, // Nguyễn Hoàng Nam
-        startsAt: ptSlot3Start,
-        endsAt: ptSlot3End,
-        isAvailable: true,
-        note: 'Tư vấn hình thể & đo chỉ số InBody 1-1',
-      },
-    ],
-  });
-
-  await prisma.ptBooking.create({
-    data: {
-      id: '84000001-0000-4000-8000-000000000001',
-      memberId: createdMembers[0]!.id,
-      trainerId: createdTrainers[0]!.id,
-      subscriptionId: sub1.id,
-      quotaId: '50000003-0000-4000-8000-000000000003',
-      availabilityId: avail1.id,
-      startsAt: ptSlot1Start,
-      endsAt: ptSlot1End,
-      status: BookingStatus.BOOKED,
-      attendance: AttendanceStatus.PENDING,
-    },
-  });
-  console.log('✅ Classes, Schedules, PT Availabilities, and Bookings seeded');
+  console.log('✅ Classes, schedules, and group bookings seeded');
 
   // 12. Seed Gate Check-ins (Accepted & Rejected)
   await prisma.checkin.createMany({
@@ -1063,11 +964,6 @@ async function seed() {
         userId: staffUser.id,
         title: 'Hội viên chưa có ảnh ID Check-in',
         body: 'Hội viên Đặng Thu Hà (MEM-00001027) cần chụp Webcam ảnh ID Check-in tại quầy lễ tân.',
-      },
-      {
-        userId: '20001024-0000-4000-8000-000000001024',
-        title: 'Xác nhận đặt lịch PT 1-1',
-        body: 'Bạn đã đặt Slot PT 1-1 thành công với Coach Trần Quốc Bảo vào ngày mai lúc 09:00.',
       },
     ],
   });

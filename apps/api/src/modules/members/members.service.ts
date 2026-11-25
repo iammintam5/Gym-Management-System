@@ -1,3 +1,4 @@
+import { resolveEffectiveStatus } from '../subscriptions/helpers/subscription-status.helper';
 import {
   BadRequestException,
   ConflictException,
@@ -8,7 +9,10 @@ import {
 } from '@nestjs/common';
 import bcrypt from 'bcryptjs';
 import type { Prisma } from '@gym/database';
-import type { MemberDirectoryResponse } from '@gym/contracts';
+import type {
+  MemberDirectoryResponse,
+  MemberDirectorySummaryResponse,
+} from '@gym/contracts';
 import { memberCodeRange } from '../common/member-code';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { FaceEnrollmentService } from '../face-recognition/face-enrollment.service';
@@ -300,7 +304,9 @@ export class MembersService {
     };
   }
 
-  async directory(query: QueryMembersDto): Promise<MemberDirectoryResponse> {
+  async directory(
+    query: QueryMembersDto,
+  ): Promise<MemberDirectoryResponse | MemberDirectorySummaryResponse> {
     const now = new Date();
     const search = query.search?.trim() ?? '';
     const where: Prisma.MemberProfileWhereInput = {};
@@ -337,6 +343,61 @@ export class MembersService {
     if (status === 'Expired') where.subscriptions = { some: {}, none: live };
     const page = query.page || 1;
     const limit = Math.min(100, query.limit || 10);
+    if (query.summary) {
+      const [total, profiles] = await Promise.all([
+        this.db.client.memberProfile.count({ where }),
+        this.db.client.memberProfile.findMany({
+          where,
+          orderBy: { [query.sortBy || 'createdAt']: query.sortOrder || 'desc' },
+          omit: { idPhotoUrl: query.includePhoto === false },
+          skip: (page - 1) * limit,
+          take: limit,
+          include: {
+            user: { include: { roles: { include: { role: true } } } },
+            subscriptions: {
+              orderBy: { createdAt: 'desc' },
+              include: {
+                plan: {
+                  select: {
+                    id: true,
+                    name: true,
+                    durationDays: true,
+                    price: true,
+                  },
+                },
+                quotas: {
+                  where: { serviceType: { code: { not: 'PT' } } },
+                  include: { serviceType: true },
+                },
+              },
+            },
+          },
+        }),
+      ]);
+      return {
+        data: profiles.map((profile) => this.mapMemberDetail(profile)),
+        subscriptions: profiles.flatMap((profile) =>
+          profile.subscriptions.map((sub) => ({
+            id: sub.id,
+            memberId: sub.memberId,
+            planId: sub.planId,
+            startDate: sub.startDate.toISOString(),
+            endDate: sub.endDate.toISOString(),
+            effectiveStatus: resolveEffectiveStatus(sub, now),
+            plan: { ...sub.plan, price: Number(sub.plan.price) },
+            quotas: sub.quotas.map((q) => ({
+              id: q.id,
+              service: q.serviceType.code,
+              serviceName: q.serviceType.name,
+              allocated: q.allocated,
+              used: q.used,
+              reserved: q.reserved,
+            })),
+          })),
+        ),
+        meta: { page, limit, total, totalPages: Math.ceil(total / limit) },
+      };
+    }
     const [total, profiles] = await Promise.all([
       this.db.client.memberProfile.count({ where }),
       this.db.client.memberProfile.findMany({

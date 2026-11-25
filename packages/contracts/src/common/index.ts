@@ -57,8 +57,9 @@ export interface SubscriptionQuotaDetail {
 
 export interface QuotaTransactionDetail {
   id: string;
-  quotaId: string;
-  subscriptionId: string;
+  quotaId: string | null;
+  subscriptionId: string | null;
+  ptPurchaseId?: string | null;
   type: QuotaTransactionType;
   allocatedDelta: number;
   reservedDelta: number;
@@ -91,6 +92,7 @@ export interface CanUseQuotaResult {
 export interface AdjustQuotaRequest {
   allocatedDelta?: number;
   reason: string;
+  idempotencyKey?: string;
 }
 
 /**
@@ -121,4 +123,20 @@ export const GYM_DOMAIN_RULES = {
     MAX_DAYS: 60,
     MAX_FREEZES_PER_SUBSCRIPTION: 2,
   },
+  EMPLOYEE: {
+    MAX_SPECIALTIES: 12,
+    SPECIALTY_MAX_LENGTH: 100,
+    SPECIALIZATION_MAX_LENGTH: 255,
+  },
+  PT_PACKAGES: {
+    DEFAULT_SESSION_MINUTES: 60,
+    MAX_OPEN_STANDALONE_PURCHASES: 1,
+    ORPHAN_RECONCILE_KEY_PREFIX: 'reconcile:orphan-pt-reserved:',
+  },
+} as const;
+
+/** Active product scope; historical PT contracts remain for financial compatibility. */
+export const GYM_SERVICE_SCOPE = {
+  personalTraining: false,
+  groupClasses: true,
 } as const;

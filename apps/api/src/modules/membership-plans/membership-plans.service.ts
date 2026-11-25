@@ -1,16 +1,20 @@
+import { CatalogReadCache } from './catalog-read-cache';
 import {
   BadRequestException,
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
-import type {
-  MembershipPlanDetail,
-  PaginatedMembershipPlansResponse,
-  PlanEntitlementItem,
-  ServiceTypeItem,
+import {
+  ServiceTypeCode,
+  type MembershipPlanDetail,
+  type PaginatedMembershipPlansResponse,
+  type PlanEntitlementItem,
+  type ServiceTypeItem,
 } from '@gym/contracts';
 import { DatabaseService } from '../database/database.module';
+import { PtCreditService } from '../pt-packages/pt-credit.service';
 import type { CreateMembershipPlanDto } from './dto/create-membership-plan.dto';
 import type { UpdateMembershipPlanDto } from './dto/update-membership-plan.dto';
 import type { UpdateMembershipPlanStatusDto } from './dto/update-membership-plan-status.dto';
@@ -41,24 +45,34 @@ interface RawPlanWithEntitlements {
 @Injectable()
 export class MembershipPlansService {
   private readonly logger = new Logger(MembershipPlansService.name);
+  private readonly ptCredits: PtCreditService;
+  private readonly catalogCache = new CatalogReadCache();
 
-  constructor(private readonly db: DatabaseService) {}
+  constructor(
+    private readonly db: DatabaseService,
+    @Optional() ptCreditService?: PtCreditService,
+  ) {
+    this.ptCredits = ptCreditService ?? new PtCreditService(this.db);
+  }
 
-  private mapPlanDetail(plan: RawPlanWithEntitlements): MembershipPlanDetail {
+  private mapPlanDetail(
+    plan: RawPlanWithEntitlements,
+    _cutoverActive = false,
+  ): MembershipPlanDetail {
     const priceNum =
       typeof plan.price === 'number'
         ? plan.price
         : Number(plan.price?.toString() ?? 0);
 
-    const entitlements: PlanEntitlementItem[] = (plan.entitlements || []).map(
-      (e) => ({
+    const entitlements: PlanEntitlementItem[] = (plan.entitlements || [])
+      .filter((e) => e.serviceType.code !== ServiceTypeCode.PT)
+      .map((e) => ({
         id: e.id,
         service: e.serviceType.code,
         serviceName: e.serviceType.name,
         limitType: e.allocated === null ? 'UNLIMITED' : 'COUNT',
         limitValue: e.allocated,
-      }),
-    );
+      }));
 
     return {
       id: plan.id,
@@ -74,7 +88,11 @@ export class MembershipPlansService {
   }
 
   private validateEntitlementItem(item: PlanEntitlementInputDto) {
-    if (!item.service || typeof item.service !== 'string' || !item.service.trim()) {
+    if (
+      !item.service ||
+      typeof item.service !== 'string' ||
+      !item.service.trim()
+    ) {
       throw new BadRequestException('Service code is required');
     }
 
@@ -109,7 +127,10 @@ export class MembershipPlansService {
 
   private async validateAndResolveEntitlements(
     entitlements: PlanEntitlementInputDto[],
-  ): Promise<Array<{ serviceTypeId: string; allocated: number | null }>> {
+    cutoverActive = false,
+  ): Promise<
+    Array<{ code: string; serviceTypeId: string; allocated: number | null }>
+  > {
     const seenServices = new Set<string>();
 
     for (const item of entitlements) {
@@ -121,6 +142,15 @@ export class MembershipPlansService {
       }
       seenServices.add(normalizedCode);
       this.validateEntitlementItem(item);
+      if (
+        cutoverActive &&
+        normalizedCode === ServiceTypeCode.PT &&
+        item.limitType !== 'NONE'
+      ) {
+        throw new BadRequestException(
+          'Gói tập Gym không còn đính kèm buổi PT 1-1 sau khi tách gói PT bán rời.',
+        );
+      }
     }
 
     // Fetch all available service types in database
@@ -140,7 +170,11 @@ export class MembershipPlansService {
     }
 
     // Prepare records for database insertion (excluding NONE)
-    const result: Array<{ serviceTypeId: string; allocated: number | null }> = [];
+    const result: Array<{
+      code: string;
+      serviceTypeId: string;
+      allocated: number | null;
+    }> = [];
     for (const item of entitlements) {
       const code = item.service.trim().toUpperCase();
       const serviceTypeId = serviceMap.get(code)!;
@@ -149,6 +183,7 @@ export class MembershipPlansService {
         continue;
       }
       result.push({
+        code,
         serviceTypeId,
         allocated: item.limitType === 'UNLIMITED' ? null : item.limitValue!,
       });
@@ -158,14 +193,20 @@ export class MembershipPlansService {
   }
 
   async getServiceTypes(): Promise<ServiceTypeItem[]> {
+    return this.catalogCache.get('services', () => this.loadServiceTypes());
+  }
+
+  private async loadServiceTypes(): Promise<ServiceTypeItem[]> {
     const services = await this.db.client.serviceType.findMany({
       orderBy: { code: 'asc' },
     });
-    return services.map((s) => ({
-      id: s.id,
-      code: s.code,
-      name: s.name,
-    }));
+    return services
+      .filter((s) => s.code !== ServiceTypeCode.PT)
+      .map((s) => ({
+        id: s.id,
+        code: s.code,
+        name: s.name,
+      }));
   }
 
   async create(dto: CreateMembershipPlanDto): Promise<MembershipPlanDetail> {
@@ -180,7 +221,9 @@ export class MembershipPlansService {
       throw new BadRequestException('Price must be greater than or equal to 0');
     }
 
+    const cutoverBeforeTx = await this.ptCredits.hasCutoverOccurred();
     let resolvedEntitlements: Array<{
+      code: string;
       serviceTypeId: string;
       allocated: number | null;
     }> = [];
@@ -188,48 +231,84 @@ export class MembershipPlansService {
     if (dto.entitlements && dto.entitlements.length > 0) {
       resolvedEntitlements = await this.validateAndResolveEntitlements(
         dto.entitlements,
+        cutoverBeforeTx,
       );
     }
 
     // Atomic transaction to create plan + entitlements
-    const createdPlan = await this.db.client.$transaction(async (tx) => {
-      const plan = await tx.membershipPlan.create({
-        data: {
-          name,
-          description: dto.description?.trim() || null,
-          durationDays: dto.durationDays,
-          price: dto.price,
-          isActive: dto.isActive ?? true,
-        },
-      });
+    const { createdPlan, cutoverActive } = await this.db.client.$transaction(
+      async (tx) => {
+        const cutoverInTx = await this.ptCredits.hasCutoverOccurredInTx(tx);
+        if (
+          cutoverInTx &&
+          resolvedEntitlements.some((e) => e.code === ServiceTypeCode.PT)
+        ) {
+          throw new BadRequestException(
+            'Gói tập Gym không còn đính kèm buổi PT 1-1 sau khi tách gói PT bán rời.',
+          );
+        }
 
-      if (resolvedEntitlements.length > 0) {
-        await tx.planEntitlement.createMany({
-          data: resolvedEntitlements.map((e) => ({
-            planId: plan.id,
-            serviceTypeId: e.serviceTypeId,
-            allocated: e.allocated,
-          })),
+        const plan = await tx.membershipPlan.create({
+          data: {
+            name,
+            description: dto.description?.trim() || null,
+            durationDays: dto.durationDays,
+            price: dto.price,
+            isActive: dto.isActive ?? true,
+          },
         });
-      }
 
-      return tx.membershipPlan.findUniqueOrThrow({
-        where: { id: plan.id },
-        include: {
-          entitlements: {
-            include: {
-              serviceType: true,
+        if (resolvedEntitlements.length > 0) {
+          await tx.planEntitlement.createMany({
+            data: resolvedEntitlements.map((e) => ({
+              planId: plan.id,
+              serviceTypeId: e.serviceTypeId,
+              allocated: e.allocated,
+            })),
+          });
+        }
+
+        const loaded = await tx.membershipPlan.findUniqueOrThrow({
+          where: { id: plan.id },
+          include: {
+            entitlements: {
+              include: {
+                serviceType: true,
+              },
             },
           },
-        },
-      });
-    });
+        });
+        return { createdPlan: loaded, cutoverActive: cutoverInTx };
+      },
+    );
 
-    this.logger.log(`Created membership plan "${createdPlan.name}" (${createdPlan.id})`);
-    return this.mapPlanDetail(createdPlan as unknown as RawPlanWithEntitlements);
+    this.catalogCache.invalidate();
+    this.logger.log(
+      `Created membership plan "${createdPlan.name}" (${createdPlan.id})`,
+    );
+    return this.mapPlanDetail(
+      createdPlan as unknown as RawPlanWithEntitlements,
+      cutoverActive,
+    );
   }
 
   async findAll(
+    query: QueryMembershipPlansDto,
+  ): Promise<PaginatedMembershipPlansResponse> {
+    const key = JSON.stringify([
+      'list',
+      query.page ?? 1,
+      query.limit ?? 20,
+      query.search ?? '',
+      query.isActive ?? null,
+      query.service ?? '',
+      query.sortBy ?? 'createdAt',
+      query.sortOrder ?? 'desc',
+    ]);
+    return this.catalogCache.get(key, () => this.loadAll(query));
+  }
+
+  private async loadAll(
     query: QueryMembershipPlansDto,
   ): Promise<PaginatedMembershipPlansResponse> {
     const {
@@ -241,6 +320,18 @@ export class MembershipPlansService {
       sortBy = 'createdAt',
       sortOrder = 'desc',
     } = query;
+
+    if (service && service.trim().toUpperCase() === ServiceTypeCode.PT) {
+      return {
+        data: [],
+        meta: {
+          page,
+          limit,
+          total: 0,
+          totalPages: 0,
+        },
+      };
+    }
 
     const skip = (page - 1) * limit;
 
@@ -299,6 +390,10 @@ export class MembershipPlansService {
   }
 
   async findPublic(): Promise<MembershipPlanDetail[]> {
+    return this.catalogCache.get('public', () => this.loadfindPublic());
+  }
+
+  private async loadfindPublic(): Promise<MembershipPlanDetail[]> {
     const plans = await this.db.client.membershipPlan.findMany({
       where: { isActive: true },
       orderBy: [{ price: 'asc' }, { createdAt: 'desc' }],
@@ -317,6 +412,10 @@ export class MembershipPlansService {
   }
 
   async findById(id: string): Promise<MembershipPlanDetail> {
+    return this.catalogCache.get('id:' + id, () => this.loadfindById(id));
+  }
+
+  private async loadfindById(id: string): Promise<MembershipPlanDetail> {
     const plan = await this.db.client.membershipPlan.findUnique({
       where: { id },
       include: {
@@ -388,7 +487,10 @@ export class MembershipPlansService {
       },
     });
 
-    this.logger.log(`Updated membership plan "${updated.name}" (${updated.id})`);
+    this.catalogCache.invalidate();
+    this.logger.log(
+      `Updated membership plan "${updated.name}" (${updated.id})`,
+    );
     return this.mapPlanDetail(updated as unknown as RawPlanWithEntitlements);
   }
 
@@ -417,6 +519,7 @@ export class MembershipPlansService {
       },
     });
 
+    this.catalogCache.invalidate();
     this.logger.log(
       `Updated membership plan status "${updated.name}" (${updated.id}) to isActive=${updated.isActive}`,
     );
@@ -434,43 +537,62 @@ export class MembershipPlansService {
       throw new NotFoundException(`Membership plan with ID "${id}" not found`);
     }
 
+    const cutoverBeforeTx = await this.ptCredits.hasCutoverOccurred();
     const resolvedEntitlements = await this.validateAndResolveEntitlements(
       dto.entitlements,
+      cutoverBeforeTx,
     );
 
     // Atomic replacement of entitlements
-    const updatedPlan = await this.db.client.$transaction(async (tx) => {
-      // 1. Delete existing entitlements for this plan
-      await tx.planEntitlement.deleteMany({
-        where: { planId: id },
-      });
+    const { updatedPlan, cutoverActive } = await this.db.client.$transaction(
+      async (tx) => {
+        const cutoverInTx = await this.ptCredits.hasCutoverOccurredInTx(tx);
+        if (
+          cutoverInTx &&
+          resolvedEntitlements.some((e) => e.code === ServiceTypeCode.PT)
+        ) {
+          throw new BadRequestException(
+            'Gói tập Gym không còn đính kèm buổi PT 1-1 sau khi tách gói PT bán rời.',
+          );
+        }
 
-      // 2. Create new non-NONE entitlements
-      if (resolvedEntitlements.length > 0) {
-        await tx.planEntitlement.createMany({
-          data: resolvedEntitlements.map((e) => ({
-            planId: id,
-            serviceTypeId: e.serviceTypeId,
-            allocated: e.allocated,
-          })),
+        // 1. Delete existing entitlements for this plan
+        await tx.planEntitlement.deleteMany({
+          where: { planId: id },
         });
-      }
 
-      return tx.membershipPlan.findUniqueOrThrow({
-        where: { id },
-        include: {
-          entitlements: {
-            include: {
-              serviceType: true,
+        // 2. Create new non-NONE entitlements
+        if (resolvedEntitlements.length > 0) {
+          await tx.planEntitlement.createMany({
+            data: resolvedEntitlements.map((e) => ({
+              planId: id,
+              serviceTypeId: e.serviceTypeId,
+              allocated: e.allocated,
+            })),
+          });
+        }
+
+        const loaded = await tx.membershipPlan.findUniqueOrThrow({
+          where: { id },
+          include: {
+            entitlements: {
+              include: {
+                serviceType: true,
+              },
             },
           },
-        },
-      });
-    });
+        });
+        return { updatedPlan: loaded, cutoverActive: cutoverInTx };
+      },
+    );
 
+    this.catalogCache.invalidate();
     this.logger.log(
       `Updated entitlements for membership plan "${updatedPlan.name}" (${updatedPlan.id})`,
     );
-    return this.mapPlanDetail(updatedPlan as unknown as RawPlanWithEntitlements);
+    return this.mapPlanDetail(
+      updatedPlan as unknown as RawPlanWithEntitlements,
+      cutoverActive,
+    );
   }
 }

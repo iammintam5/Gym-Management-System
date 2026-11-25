@@ -1,15 +1,20 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
+  ArrayMaxSize,
+  IsArray,
+  IsBoolean,
   IsDateString,
   IsEmail,
   IsIn,
   IsNotEmpty,
   IsOptional,
   IsString,
+  Matches,
   MaxLength,
   MinLength,
+  ValidateIf,
 } from 'class-validator';
-import { UserRole } from '@gym/contracts';
+import { GYM_DOMAIN_RULES, UserRole } from '@gym/contracts';
 
 export class CreateEmployeeDto {
   @ApiProperty({ example: 'staff.member@gym.local', description: 'Employee account email' })
@@ -25,14 +30,14 @@ export class CreateEmployeeDto {
   fullName!: string;
 
   @ApiProperty({
-    enum: [UserRole.STAFF, UserRole.PT],
+    enum: [UserRole.STAFF, UserRole.TRAINER],
     example: UserRole.STAFF,
-    description: 'Employee role (STAFF or PT only; ADMIN/MEMBER are forbidden)',
+    description: 'Employee role (STAFF or TRAINER only; ADMIN/MEMBER are forbidden)',
   })
-  @IsIn([UserRole.STAFF, UserRole.PT], {
-    message: 'Role must be either STAFF or PT',
+  @IsIn([UserRole.STAFF, UserRole.TRAINER], {
+    message: 'Role must be either STAFF or TRAINER',
   })
-  role!: UserRole.STAFF | UserRole.PT;
+  role!: UserRole.STAFF | UserRole.TRAINER;
 
   @ApiPropertyOptional({
     example: 'Staff@123456',
@@ -52,12 +57,51 @@ export class CreateEmployeeDto {
 
   @ApiPropertyOptional({
     example: 'Customer Service & Reception',
-    description: 'Specialization or area of expertise (e.g. Strength Training for PT)',
+    description: 'Legacy specialization or area of expertise (compatible with older callers)',
   })
   @IsOptional()
   @IsString()
-  @MaxLength(100, { message: 'Specialization must not exceed 100 characters' })
+  @MaxLength(GYM_DOMAIN_RULES.EMPLOYEE.SPECIALIZATION_MAX_LENGTH, {
+    message: `Specialization must not exceed ${GYM_DOMAIN_RULES.EMPLOYEE.SPECIALIZATION_MAX_LENGTH} characters`,
+  })
   specialization?: string;
+
+  @ApiPropertyOptional({
+    type: [String],
+    example: ['Boxing', 'HIIT'],
+    description: 'Structured trainer specialties list (TRAINER role only)',
+  })
+  @ValidateIf((_obj: unknown, value: unknown) => value !== undefined)
+  @IsArray({ message: 'Specialties must be an array of strings' })
+  @ArrayMaxSize(GYM_DOMAIN_RULES.EMPLOYEE.MAX_SPECIALTIES, {
+    message: `Specialties must not exceed ${GYM_DOMAIN_RULES.EMPLOYEE.MAX_SPECIALTIES} items`,
+  })
+  @IsString({ each: true, message: 'Each specialty must be a string' })
+  @Matches(/\S/, {
+    each: true,
+    message: 'Each specialty must be a non-empty string',
+  })
+  @MaxLength(GYM_DOMAIN_RULES.EMPLOYEE.SPECIALTY_MAX_LENGTH, {
+    each: true,
+    message: `Each specialty must not exceed ${GYM_DOMAIN_RULES.EMPLOYEE.SPECIALTY_MAX_LENGTH} characters`,
+  })
+  specialties?: string[];
+
+  @ApiPropertyOptional({
+    example: true,
+    description: 'Whether this trainer can be assigned to group classes (TRAINER role only)',
+  })
+  @ValidateIf((_obj: unknown, value: unknown) => value !== undefined)
+  @IsBoolean({ message: 'canTeachClasses must be a boolean' })
+  canTeachClasses?: boolean;
+
+  @ApiPropertyOptional({
+    example: true,
+    description: 'Whether this trainer can coach 1-on-1 PT sessions (TRAINER role only)',
+  })
+  @ValidateIf((_obj: unknown, value: unknown) => value !== undefined)
+  @IsBoolean({ message: 'canCoachPt must be a boolean' })
+  canCoachPt?: boolean;
 
   @ApiPropertyOptional({ example: '2024-06-01', description: 'Hire date in YYYY-MM-DD format' })
   @IsOptional()

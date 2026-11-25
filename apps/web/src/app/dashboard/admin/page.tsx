@@ -120,8 +120,7 @@ export default function MembershipPlansPage() {
   const [formClassLimitType, setFormClassLimitType] =
     useState<LimitType>('COUNT');
   const [formClassQuota, setFormClassQuota] = useState(12);
-  const [formPtLimitType, setFormPtLimitType] = useState<LimitType>('COUNT');
-  const [formPtQuota, setFormPtQuota] = useState(4);
+
   const [saving, setSaving] = useState(false);
   const [feedbackMsg, setFeedbackMsg] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
@@ -246,8 +245,7 @@ export default function MembershipPlansPage() {
     setFormGymAccessQuota(30);
     setFormClassLimitType('COUNT');
     setFormClassQuota(12);
-    setFormPtLimitType('COUNT');
-    setFormPtQuota(4);
+
     setErrorMsg('');
     setModalOpen(true);
   };
@@ -265,16 +263,12 @@ export default function MembershipPlansPage() {
     const classEnt = tier.entitlements.find(
       (e) => e.service === ServiceTypeCode.CLASS,
     );
-    const ptEnt = tier.entitlements.find(
-      (e) => e.service === ServiceTypeCode.PT,
-    );
 
     setFormGymUnlimited(!gymEnt || gymEnt.limitType === 'UNLIMITED');
     setFormGymAccessQuota(gymEnt?.limitValue ?? tier.durationDays);
-    setFormClassLimitType(classEnt?.limitType ?? 'COUNT');
+    setFormClassLimitType(classEnt?.limitType ?? 'NONE');
     setFormClassQuota(classEnt?.limitValue ?? 12);
-    setFormPtLimitType(ptEnt?.limitType ?? 'COUNT');
-    setFormPtQuota(ptEnt?.limitValue ?? 4);
+
     setErrorMsg('');
     setModalOpen(true);
   };
@@ -294,19 +288,14 @@ export default function MembershipPlansPage() {
       {
         service: ServiceTypeCode.GYM_ACCESS,
         limitType: formGymUnlimited ? 'UNLIMITED' : 'COUNT',
-        limitValue: formGymUnlimited ? null : Number(formGymAccessQuota),
+        ...(formGymUnlimited ? {} : { limitValue: Number(formGymAccessQuota) }),
       },
       {
         service: ServiceTypeCode.CLASS,
         limitType: formClassLimitType,
-        limitValue:
-          formClassLimitType === 'UNLIMITED' ? null : Number(formClassQuota),
-      },
-      {
-        service: ServiceTypeCode.PT,
-        limitType: formPtLimitType,
-        limitValue:
-          formPtLimitType === 'UNLIMITED' ? null : Number(formPtQuota),
+        ...(formClassLimitType === 'COUNT'
+          ? { limitValue: Number(formClassQuota) }
+          : {}),
       },
     ];
 
@@ -505,10 +494,6 @@ export default function MembershipPlansPage() {
                     / {formatDurationLabel(tier.durationDays)}
                   </span>
                 </div>
-
-                <p className="mt-2 text-[13px] text-zinc-500">
-                  {tier.description}
-                </p>
 
                 <ul className="mt-6 space-y-3 border-t border-white/[0.06] pt-6">
                   {tier.features.map((feat) => (
@@ -877,6 +862,7 @@ export default function MembershipPlansPage() {
                       aria-label="Chế độ lớp học nhóm"
                       className="mt-1 h-8 w-full rounded-lg border border-white/[0.08] bg-[#141418] px-2.5 text-[13px] text-white"
                     >
+                      <option value="NONE">Không bao gồm</option>
                       <option value="COUNT">Giới hạn theo số buổi</option>
                       <option value="UNLIMITED">Không giới hạn buổi</option>
                     </select>
@@ -887,44 +873,12 @@ export default function MembershipPlansPage() {
                     </label>
                     <input
                       type="number"
-                      min={0}
-                      disabled={formClassLimitType === 'UNLIMITED'}
+                      min={1}
+                      disabled={formClassLimitType !== 'COUNT'}
                       value={formClassQuota}
                       onChange={(e) =>
                         setFormClassQuota(Number(e.target.value))
                       }
-                      className="mt-1 h-8 w-full rounded-lg border border-white/[0.08] bg-[#141418] px-2.5 text-[13px] tabular-nums text-white disabled:opacity-40"
-                    />
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-[13px] text-zinc-400">
-                      Chế độ tập PT 1 kèm 1
-                    </label>
-                    <select
-                      value={formPtLimitType}
-                      onChange={(e) =>
-                        setFormPtLimitType(e.target.value as LimitType)
-                      }
-                      aria-label="Chế độ tập PT 1 kèm 1"
-                      className="mt-1 h-8 w-full rounded-lg border border-white/[0.08] bg-[#141418] px-2.5 text-[13px] text-white"
-                    >
-                      <option value="COUNT">Giới hạn theo số buổi</option>
-                      <option value="UNLIMITED">Không giới hạn buổi</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-[13px] text-zinc-400">
-                      Số buổi PT 1-1 được cấp
-                    </label>
-                    <input
-                      type="number"
-                      min={0}
-                      disabled={formPtLimitType === 'UNLIMITED'}
-                      value={formPtQuota}
-                      onChange={(e) => setFormPtQuota(Number(e.target.value))}
                       className="mt-1 h-8 w-full rounded-lg border border-white/[0.08] bg-[#141418] px-2.5 text-[13px] tabular-nums text-white disabled:opacity-40"
                     />
                   </div>

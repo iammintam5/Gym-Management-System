@@ -9,7 +9,9 @@ import { apiClient } from '@/services/api-client';
 
 export function SubscriptionQuotaHistory({ sub }: { sub: SubscriptionDetail }) {
   const [open, setOpen] = useState(false);
-  const [quotaId, setQuotaId] = useState(sub.quotas[0]?.id ?? '');
+  const [quotaId, setQuotaId] = useState(
+    sub.quotas.find((quota) => quota.service !== 'PT')?.id ?? '',
+  );
   const [data, setData] = useState<PaginatedQuotaTransactionsResponse | null>(
     null,
   );
@@ -89,11 +91,13 @@ export function SubscriptionQuotaHistory({ sub }: { sub: SubscriptionDetail }) {
               }}
               className="min-h-9 min-w-0 rounded-lg border border-white/10 bg-[#141418] px-2 text-zinc-200"
             >
-              {sub.quotas.map((quota) => (
-                <option key={quota.id} value={quota.id}>
-                  {quota.serviceName}
-                </option>
-              ))}
+              {sub.quotas
+                .filter((quota) => quota.service !== 'PT')
+                .map((quota) => (
+                  <option key={quota.id} value={quota.id}>
+                    {quota.serviceName}
+                  </option>
+                ))}
             </select>
           </label>
           <ul className="mt-2 divide-y divide-white/[0.06]">

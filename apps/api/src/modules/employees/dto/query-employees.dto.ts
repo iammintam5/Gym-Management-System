@@ -11,7 +11,7 @@ import {
   MaxLength,
   Min,
 } from 'class-validator';
-import { UserRole } from '@gym/contracts';
+import { TrainerServiceFilter, UserRole } from '@gym/contracts';
 
 export class QueryEmployeesDto {
   @ApiPropertyOptional({ default: 1, minimum: 1, description: 'Page number' })
@@ -44,12 +44,20 @@ export class QueryEmployeesDto {
   search?: string;
 
   @ApiPropertyOptional({
-    enum: [UserRole.STAFF, UserRole.PT],
-    description: 'Filter by employee role (STAFF or PT)',
+    enum: [UserRole.STAFF, UserRole.TRAINER],
+    description: 'Filter by employee role (STAFF or TRAINER)',
   })
   @IsOptional()
   @IsEnum(UserRole)
   role?: UserRole;
+
+  @ApiPropertyOptional({
+    enum: [TrainerServiceFilter.CLASS, TrainerServiceFilter.PT],
+    description: 'Filter trainers by assigned service capability (CLASS or PT)',
+  })
+  @IsOptional()
+  @IsIn([TrainerServiceFilter.CLASS, TrainerServiceFilter.PT])
+  service?: TrainerServiceFilter;
 
   @ApiPropertyOptional({
     description: 'Filter by active account status (true/false)',

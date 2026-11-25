@@ -1,8 +1,51 @@
 export enum UserRole {
   MEMBER = 'MEMBER',
-  PT = 'PT',
+  TRAINER = 'TRAINER',
   STAFF = 'STAFF',
   ADMIN = 'ADMIN',
+}
+
+/** Normalizes a persisted or JWT role code, mapping legacy `'PT'` to `UserRole.TRAINER`. */
+export function normalizeUserRole(role: unknown): UserRole | null {
+  if (role === 'PT') return UserRole.TRAINER;
+  if (
+    typeof role === 'string' &&
+    (Object.values(UserRole) as string[]).includes(role)
+  ) {
+    return role as UserRole;
+  }
+  return null;
+}
+
+/** Normalizes a verified JWT roles claim; returns `null` if any entry is unknown or non-array. */
+export function normalizeVerifiedUserRoles(roles: unknown): UserRole[] | null {
+  if (!Array.isArray(roles)) return null;
+  const seen = new Set<UserRole>();
+  const normalized: UserRole[] = [];
+  for (const role of roles) {
+    const resolved = normalizeUserRole(role);
+    if (!resolved) return null;
+    if (!seen.has(resolved)) {
+      seen.add(resolved);
+      normalized.push(resolved);
+    }
+  }
+  return normalized;
+}
+
+/** Normalizes persisted or DB role arrays, preserving order and dropping unknown entries. */
+export function normalizePersistedUserRoles(roles: unknown): UserRole[] {
+  if (!Array.isArray(roles)) return [];
+  const seen = new Set<UserRole>();
+  const normalized: UserRole[] = [];
+  for (const role of roles) {
+    const resolved = normalizeUserRole(role);
+    if (resolved && !seen.has(resolved)) {
+      seen.add(resolved);
+      normalized.push(resolved);
+    }
+  }
+  return normalized;
 }
 
 export interface AuthUser {

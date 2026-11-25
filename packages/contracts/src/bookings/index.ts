@@ -55,7 +55,9 @@ export interface PtBookingDetail {
   trainerName: string;
   trainerPhone?: string | null;
   subscriptionId: string;
-  quotaId: string;
+  sourceSubscriptionId?: string | null;
+  quotaId: string | null;
+  ptPurchaseId?: string | null;
   availabilityId?: string | null;
   startsAt: string;
   endsAt: string;

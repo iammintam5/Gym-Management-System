@@ -10,7 +10,7 @@ datasource db {
 
 enum UserRole {
   MEMBER
-  PT
+  TRAINER
   STAFF
   ADMIN
 }
@@ -76,6 +76,20 @@ enum FreezeStatus {
   CANCELLED
 }
 
+enum PtPurchaseOrigin {
+  STANDALONE
+  LEGACY_BUNDLED
+}
+
+enum PtPurchaseStatus {
+  PENDING_PAYMENT
+  ACTIVE
+  EXHAUSTED
+  EXPIRED
+  CANCELLED
+  REFUNDED
+}
+
 model User {
   id                   String               @id @default(uuid()) @db.Uuid
   email                String               @unique
@@ -88,6 +102,7 @@ model User {
   memberProfile        MemberProfile?
   employeeProfile      EmployeeProfile?
   createdSubscriptions Subscription[]       @relation("SubscriptionCreator")
+  createdPtPurchases   PtPackagePurchase[]  @relation("PtPurchaseCreator")
   confirmedPayments    PaymentRecord[]      @relation("PaymentConfirmer")
   quotaTransactions    QuotaTransaction[]   @relation("QuotaActor")
   recordedCheckins     Checkin[]            @relation("CheckinRecorder")
@@ -132,21 +147,22 @@ model UserRoleAssignment {
 }
 
 model MemberProfile {
-  id               String         @id @default(uuid()) @db.Uuid
-  userId           String         @unique @map("user_id") @db.Uuid
-  fullName         String         @map("full_name")
-  phone            String?
-  gender           Gender?
-  dateOfBirth      DateTime?      @map("date_of_birth") @db.Date
-  idPhotoUrl       String?        @map("id_photo_url")
-  facePhotoVersion String?        @map("face_photo_version")
-  createdAt        DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt        DateTime       @updatedAt @map("updated_at") @db.Timestamptz(3)
-  user             User           @relation(fields: [userId], references: [id], onDelete: Restrict)
-  subscriptions    Subscription[]
-  checkins         Checkin[]
-  classBookings    ClassBooking[]
-  ptBookings       PtBooking[]
+  id                 String              @id @default(uuid()) @db.Uuid
+  userId             String              @unique @map("user_id") @db.Uuid
+  fullName           String              @map("full_name")
+  phone              String?
+  gender             Gender?
+  dateOfBirth        DateTime?           @map("date_of_birth") @db.Date
+  idPhotoUrl         String?             @map("id_photo_url")
+  facePhotoVersion   String?             @map("face_photo_version")
+  createdAt          DateTime            @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt          DateTime            @updatedAt @map("updated_at") @db.Timestamptz(3)
+  user               User                @relation(fields: [userId], references: [id], onDelete: Restrict)
+  subscriptions      Subscription[]
+  checkins           Checkin[]
+  classBookings      ClassBooking[]
+  ptBookings         PtBooking[]
+  ptPackagePurchases PtPackagePurchase[]
 
   faceDescriptor MemberFaceDescriptor?
 
@@ -154,18 +170,22 @@ model MemberProfile {
 }
 
 model EmployeeProfile {
-  id             String           @id @default(uuid()) @db.Uuid
-  userId         String           @unique @map("user_id") @db.Uuid
-  fullName       String           @map("full_name")
-  phone          String?
-  specialization String?
-  hiredAt        DateTime?        @map("hired_at") @db.Date
-  createdAt      DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt      DateTime         @updatedAt @map("updated_at") @db.Timestamptz(3)
-  user           User             @relation(fields: [userId], references: [id], onDelete: Restrict)
-  availability   PtAvailability[]
-  classSchedules ClassSchedule[]
-  ptBookings     PtBooking[]
+  id                    String           @id @default(uuid()) @db.Uuid
+  userId                String           @unique @map("user_id") @db.Uuid
+  fullName              String           @map("full_name")
+  phone                 String?
+  specialization        String?
+  specialties           String[]         @default([])
+  canTeachClasses       Boolean          @default(false) @map("can_teach_classes")
+  canCoachPt            Boolean          @default(false) @map("can_coach_pt")
+  hiredAt               DateTime?        @map("hired_at") @db.Date
+  createdAt             DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt             DateTime         @updatedAt @map("updated_at") @db.Timestamptz(3)
+  user                  User             @relation(fields: [userId], references: [id], onDelete: Restrict)
+  availability          PtAvailability[]
+  classSchedules        ClassSchedule[]
+  ptBookings            PtBooking[]
+  assignedSubscriptions Subscription[]   @relation("SubscriptionAssignedTrainer")
 
   @@map("employee_profiles")
 }
@@ -210,6 +230,9 @@ model PlanEntitlement {
 }
 
 model Subscription {
+  assignedTrainerId      String?              @map("assigned_trainer_id") @db.Uuid
+  ptAssignmentVersion    Int                  @default(0) @map("pt_assignment_version")
+  assignedTrainer        EmployeeProfile?     @relation("SubscriptionAssignedTrainer", fields: [assignedTrainerId], references: [id], onDelete: Restrict)
   id                     String               @id @default(uuid()) @db.Uuid
   memberId               String               @map("member_id") @db.Uuid
   planId                 String               @map("plan_id") @db.Uuid
@@ -237,9 +260,12 @@ model Subscription {
   quotaTransactions      QuotaTransaction[]
   checkins               Checkin[]
   classBookings          ClassBooking[]
-  ptBookings             PtBooking[]
+  ptBookings             PtBooking[]          @relation("PtBookingCoverageSubscription")
+  sourcedPtBookings      PtBooking[]          @relation("PtBookingSourceSubscription")
+  ptPackagePurchases     PtPackagePurchase[]
 
   @@unique([id, memberId])
+  @@index([assignedTrainerId, endDate])
   @@index([memberId, status])
   @@index([status, startDate])
   @@index([status, endDate])
@@ -249,20 +275,21 @@ model Subscription {
 }
 
 model SubscriptionQuota {
-  id             String             @id @default(uuid()) @db.Uuid
-  subscriptionId String             @map("subscription_id") @db.Uuid
-  serviceTypeId  String             @map("service_type_id") @db.Uuid
+  id                 String              @id @default(uuid()) @db.Uuid
+  subscriptionId     String              @map("subscription_id") @db.Uuid
+  serviceTypeId      String              @map("service_type_id") @db.Uuid
   // Purchased entitlement snapshot. null allocated means unlimited.
-  allocated      Int?
-  reserved       Int                @default(0)
-  used           Int                @default(0)
-  updatedAt      DateTime           @updatedAt @map("updated_at") @db.Timestamptz(3)
-  subscription   Subscription       @relation(fields: [subscriptionId], references: [id], onDelete: Restrict)
-  serviceType    ServiceType        @relation(fields: [serviceTypeId], references: [id], onDelete: Restrict)
-  transactions   QuotaTransaction[]
-  checkins       Checkin[]
-  classBookings  ClassBooking[]
-  ptBookings     PtBooking[]
+  allocated          Int?
+  reserved           Int                 @default(0)
+  used               Int                 @default(0)
+  updatedAt          DateTime            @updatedAt @map("updated_at") @db.Timestamptz(3)
+  subscription       Subscription        @relation(fields: [subscriptionId], references: [id], onDelete: Restrict)
+  serviceType        ServiceType         @relation(fields: [serviceTypeId], references: [id], onDelete: Restrict)
+  transactions       QuotaTransaction[]
+  checkins           Checkin[]
+  classBookings      ClassBooking[]
+  ptBookings         PtBooking[]
+  ptPackagePurchases PtPackagePurchase[]
 
   @@unique([subscriptionId, serviceTypeId])
   @@unique([id, subscriptionId])
@@ -292,28 +319,32 @@ model SubscriptionFreeze {
 }
 
 model PaymentRecord {
-  id             String        @id @default(uuid()) @db.Uuid
-  subscriptionId String        @map("subscription_id") @db.Uuid
-  amount         Decimal       @db.Decimal(14, 2)
-  currency       String        @default("VND") @db.VarChar(3)
-  status         PaymentStatus @default(PENDING)
+  id             String             @id @default(uuid()) @db.Uuid
+  subscriptionId String?            @map("subscription_id") @db.Uuid
+  ptPurchaseId   String?            @map("pt_purchase_id") @db.Uuid
+  amount         Decimal            @db.Decimal(14, 2)
+  currency       String             @default("VND") @db.VarChar(3)
+  status         PaymentStatus      @default(PENDING)
   method         String?
   note           String?
-  confirmedBy    String?       @map("confirmed_by") @db.Uuid
-  confirmedAt    DateTime?     @map("confirmed_at") @db.Timestamptz(3)
-  createdAt      DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
-  subscription   Subscription  @relation(fields: [subscriptionId], references: [id], onDelete: Restrict)
-  confirmer      User?         @relation("PaymentConfirmer", fields: [confirmedBy], references: [id], onDelete: SetNull)
+  confirmedBy    String?            @map("confirmed_by") @db.Uuid
+  confirmedAt    DateTime?          @map("confirmed_at") @db.Timestamptz(3)
+  createdAt      DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
+  subscription   Subscription?      @relation(fields: [subscriptionId], references: [id], onDelete: Restrict)
+  ptPurchase     PtPackagePurchase? @relation(fields: [ptPurchaseId], references: [id], onDelete: Restrict)
+  confirmer      User?              @relation("PaymentConfirmer", fields: [confirmedBy], references: [id], onDelete: SetNull)
 
   @@index([subscriptionId, status])
+  @@index([ptPurchaseId, status])
   @@index([confirmedBy])
   @@map("payment_records")
 }
 
 model QuotaTransaction {
   id             String               @id @default(uuid()) @db.Uuid
-  quotaId        String               @map("quota_id") @db.Uuid
-  subscriptionId String               @map("subscription_id") @db.Uuid
+  quotaId        String?              @map("quota_id") @db.Uuid
+  subscriptionId String?              @map("subscription_id") @db.Uuid
+  ptPurchaseId   String?              @map("pt_purchase_id") @db.Uuid
   type           QuotaTransactionType
   allocatedDelta Int                  @default(0) @map("allocated_delta")
   reservedDelta  Int                  @default(0) @map("reserved_delta")
@@ -325,12 +356,14 @@ model QuotaTransaction {
   reason         String?
   createdBy      String?              @map("created_by") @db.Uuid
   createdAt      DateTime             @default(now()) @map("created_at") @db.Timestamptz(3)
-  quota          SubscriptionQuota    @relation(fields: [quotaId, subscriptionId], references: [id, subscriptionId], onDelete: Restrict)
-  subscription   Subscription         @relation(fields: [subscriptionId], references: [id], onDelete: Restrict)
+  quota          SubscriptionQuota?   @relation(fields: [quotaId, subscriptionId], references: [id, subscriptionId], onDelete: Restrict)
+  subscription   Subscription?        @relation(fields: [subscriptionId], references: [id], onDelete: Restrict)
+  ptPurchase     PtPackagePurchase?   @relation(fields: [ptPurchaseId], references: [id], onDelete: Restrict)
   actor          User?                @relation("QuotaActor", fields: [createdBy], references: [id], onDelete: SetNull)
 
   @@index([quotaId, createdAt])
   @@index([subscriptionId])
+  @@index([ptPurchaseId, createdAt])
   @@index([createdBy])
   @@map("quota_transactions")
 }
@@ -427,32 +460,102 @@ model PtAvailability {
 }
 
 model PtBooking {
-  id             String            @id @default(uuid()) @db.Uuid
-  memberId       String            @map("member_id") @db.Uuid
-  trainerId      String            @map("trainer_id") @db.Uuid
-  subscriptionId String            @map("subscription_id") @db.Uuid
-  quotaId        String            @map("quota_id") @db.Uuid
-  availabilityId String?           @map("availability_id") @db.Uuid
-  startsAt       DateTime          @map("starts_at") @db.Timestamptz(3)
-  endsAt         DateTime          @map("ends_at") @db.Timestamptz(3)
-  status         BookingStatus     @default(BOOKED)
-  attendance     AttendanceStatus  @default(PENDING)
-  cancelledAt    DateTime?         @map("cancelled_at") @db.Timestamptz(3)
-  attendedAt     DateTime?         @map("attended_at") @db.Timestamptz(3)
-  createdAt      DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt      DateTime          @updatedAt @map("updated_at") @db.Timestamptz(3)
-  member         MemberProfile     @relation(fields: [memberId], references: [id], onDelete: Restrict)
-  trainer        EmployeeProfile   @relation(fields: [trainerId], references: [id], onDelete: Restrict)
-  subscription   Subscription      @relation(fields: [subscriptionId, memberId], references: [id, memberId], onDelete: Restrict)
-  quota          SubscriptionQuota @relation(fields: [quotaId, subscriptionId], references: [id, subscriptionId], onDelete: Restrict)
-  availability   PtAvailability?   @relation(fields: [availabilityId, trainerId], references: [id, trainerId], onDelete: Restrict)
+  id                   String             @id @default(uuid()) @db.Uuid
+  memberId             String             @map("member_id") @db.Uuid
+  trainerId            String             @map("trainer_id") @db.Uuid
+  // Covering Gym subscription at appointment time (must belong to memberId).
+  subscriptionId       String             @map("subscription_id") @db.Uuid
+  // Credit source subscription when funded by legacy PT quota (null for standalone PT purchases).
+  sourceSubscriptionId String?            @map("source_subscription_id") @db.Uuid
+  quotaId              String?            @map("quota_id") @db.Uuid
+  ptPurchaseId         String?            @map("pt_purchase_id") @db.Uuid
+  availabilityId       String?            @map("availability_id") @db.Uuid
+  startsAt             DateTime           @map("starts_at") @db.Timestamptz(3)
+  endsAt               DateTime           @map("ends_at") @db.Timestamptz(3)
+  status               BookingStatus      @default(BOOKED)
+  attendance           AttendanceStatus   @default(PENDING)
+  cancelledAt          DateTime?          @map("cancelled_at") @db.Timestamptz(3)
+  attendedAt           DateTime?          @map("attended_at") @db.Timestamptz(3)
+  createdAt            DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt            DateTime           @updatedAt @map("updated_at") @db.Timestamptz(3)
+  member               MemberProfile      @relation(fields: [memberId], references: [id], onDelete: Restrict)
+  trainer              EmployeeProfile    @relation(fields: [trainerId], references: [id], onDelete: Restrict)
+  subscription         Subscription       @relation("PtBookingCoverageSubscription", fields: [subscriptionId, memberId], references: [id, memberId], onDelete: Restrict)
+  sourceSubscription   Subscription?      @relation("PtBookingSourceSubscription", fields: [sourceSubscriptionId, memberId], references: [id, memberId], onDelete: Restrict)
+  quota                SubscriptionQuota? @relation(fields: [quotaId, sourceSubscriptionId], references: [id, subscriptionId], onDelete: Restrict)
+  ptPurchase           PtPackagePurchase? @relation(fields: [ptPurchaseId, memberId], references: [id, memberId], onDelete: Restrict)
+  availability         PtAvailability?    @relation(fields: [availabilityId, trainerId], references: [id, trainerId], onDelete: Restrict)
 
   @@index([trainerId, startsAt, endsAt])
   @@index([memberId, startsAt])
   @@index([subscriptionId, status])
+  @@index([sourceSubscriptionId, status])
   @@index([quotaId])
+  @@index([ptPurchaseId, status])
   @@index([availabilityId])
   @@map("pt_bookings")
+}
+
+model PtPackagePlan {
+  id             String              @id @default(uuid()) @db.Uuid
+  code           String              @unique
+  name           String
+  description    String?
+  sessionCount   Int                 @map("session_count")
+  sessionMinutes Int                 @default(60) @map("session_minutes")
+  price          Decimal             @db.Decimal(14, 2)
+  isActive       Boolean             @default(true) @map("is_active")
+  createdAt      DateTime            @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime            @updatedAt @map("updated_at") @db.Timestamptz(3)
+  purchases      PtPackagePurchase[]
+
+  @@map("pt_package_plans")
+}
+
+model PtPackagePurchase {
+  id                     String             @id @default(uuid()) @db.Uuid
+  memberId               String             @map("member_id") @db.Uuid
+  origin                 PtPurchaseOrigin
+  ptPlanId               String?            @map("pt_plan_id") @db.Uuid
+  sourceSubscriptionId   String?            @unique @map("source_subscription_id") @db.Uuid
+  legacyQuotaId          String?            @unique @map("legacy_quota_id") @db.Uuid
+  packageCodeSnapshot    String?            @map("package_code_snapshot")
+  packageNameSnapshot    String             @map("package_name_snapshot")
+  sessionCountSnapshot   Int?               @map("session_count_snapshot")
+  sessionMinutesSnapshot Int                @default(60) @map("session_minutes_snapshot")
+  // null allocated is allowed only for legacy unlimited PT rights; standalone purchases require positive allocated.
+  allocated              Int?
+  reserved               Int                @default(0)
+  used                   Int                @default(0)
+  // Snapshot monetary amount; null for legacy converted rights (no synthetic revenue).
+  agreedPrice            Decimal?           @map("agreed_price") @db.Decimal(14, 2)
+  currency               String?            @db.VarChar(3)
+  paymentStatus          PaymentStatus      @default(PENDING) @map("payment_status")
+  status                 PtPurchaseStatus   @default(PENDING_PAYMENT)
+  originalStartDate      DateTime?          @map("original_start_date") @db.Timestamptz(3)
+  originalEndDate        DateTime?          @map("original_end_date") @db.Timestamptz(3)
+  cutoverAt              DateTime?          @map("cutover_at") @db.Timestamptz(3)
+  cutoverEligible        Boolean?           @map("cutover_eligible")
+  createdBy              String?            @map("created_by") @db.Uuid
+  createdAt              DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt              DateTime           @updatedAt @map("updated_at") @db.Timestamptz(3)
+  member                 MemberProfile      @relation(fields: [memberId], references: [id], onDelete: Restrict)
+  ptPlan                 PtPackagePlan?     @relation(fields: [ptPlanId], references: [id], onDelete: Restrict)
+  sourceSubscription     Subscription?      @relation(fields: [sourceSubscriptionId, memberId], references: [id, memberId], onDelete: Restrict)
+  legacyQuota            SubscriptionQuota? @relation(fields: [legacyQuotaId, sourceSubscriptionId], references: [id, subscriptionId], onDelete: Restrict)
+  creator                User?              @relation("PtPurchaseCreator", fields: [createdBy], references: [id], onDelete: SetNull)
+  payments               PaymentRecord[]
+  quotaTransactions      QuotaTransaction[]
+  ptBookings             PtBooking[]
+
+  @@unique([id, memberId])
+  @@unique([id, legacyQuotaId])
+  @@unique([id, legacyQuotaId, sourceSubscriptionId])
+  @@index([memberId, status])
+  @@index([memberId, origin, status])
+  @@index([ptPlanId])
+  @@index([createdBy])
+  @@map("pt_package_purchases")
 }
 
 model Notification {

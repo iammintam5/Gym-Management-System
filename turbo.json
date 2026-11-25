@@ -12,7 +12,8 @@
     "JWT_REFRESH_EXPIRES_IN",
     "REDIS_HOST",
     "REDIS_PORT",
-    "NEXT_PUBLIC_API_URL"
+    "NEXT_PUBLIC_API_URL",
+    "API_INTERNAL_URL"
   ],
   "tasks": {
     "build": {

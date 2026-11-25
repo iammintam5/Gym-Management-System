@@ -1,19 +1,24 @@
 import {
+  GoneException,
   BadRequestException,
   ConflictException,
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import {
+  GYM_SERVICE_SCOPE,
   QuotaTransactionType,
+  ServiceTypeCode,
   SubscriptionStatus,
   type PaginatedQuotaTransactionsResponse,
   type QuotaTransactionDetail,
   type SubscriptionQuotaDetail,
 } from '@gym/contracts';
 import { DatabaseService } from '../database/database.module';
+import { PtCreditService } from '../pt-packages/pt-credit.service';
 import { resolveEffectiveStatus } from '../subscriptions/helpers/subscription-status.helper';
 import type { AdjustQuotaDto } from './dto/adjust-quota.dto';
 import type { QueryQuotaTransactionsDto } from './dto/query-quota-transactions.dto';
@@ -39,8 +44,9 @@ type RawQuotaWithRelations = {
 
 type RawTransactionWithRelations = {
   id: string;
-  quotaId: string;
-  subscriptionId: string;
+  quotaId: string | null;
+  subscriptionId: string | null;
+  ptPurchaseId?: string | null;
   type: string;
   allocatedDelta: number;
   reservedDelta: number;
@@ -56,10 +62,18 @@ type RawTransactionWithRelations = {
 @Injectable()
 export class QuotasService {
   private readonly logger = new Logger(QuotasService.name);
+  private readonly ptCredits: PtCreditService;
 
-  constructor(private readonly db: DatabaseService) {}
+  constructor(
+    private readonly db: DatabaseService,
+    @Optional() ptCreditService?: PtCreditService,
+  ) {
+    this.ptCredits = ptCreditService ?? new PtCreditService(this.db);
+  }
 
-  private mapQuotaDetail(quota: RawQuotaWithRelations): SubscriptionQuotaDetail {
+  private mapQuotaDetail(
+    quota: RawQuotaWithRelations,
+  ): SubscriptionQuotaDetail {
     const isUnlimited = quota.allocated === null;
     const remaining = isUnlimited
       ? null
@@ -84,8 +98,9 @@ export class QuotasService {
   ): QuotaTransactionDetail {
     return {
       id: tx.id,
-      quotaId: tx.quotaId,
-      subscriptionId: tx.subscriptionId,
+      quotaId: tx.quotaId ?? null,
+      subscriptionId: tx.subscriptionId ?? null,
+      ptPurchaseId: tx.ptPurchaseId ?? null,
       type: tx.type as QuotaTransactionType,
       allocatedDelta: tx.allocatedDelta,
       reservedDelta: tx.reservedDelta,
@@ -117,7 +132,10 @@ export class QuotasService {
       );
     }
 
-    return this.mapQuotaDetail(quota as unknown as RawQuotaWithRelations);
+    const mapped = await this.ptCredits.mapSubscriptionQuotasWithMappedPt([
+      quota as unknown as RawQuotaWithRelations,
+    ]);
+    return mapped[0]!;
   }
 
   async getSubscriptionQuotas(
@@ -139,8 +157,8 @@ export class QuotasService {
       orderBy: { serviceType: { code: 'asc' } },
     });
 
-    return quotas.map((q) =>
-      this.mapQuotaDetail(q as unknown as RawQuotaWithRelations),
+    return this.ptCredits.mapSubscriptionQuotasWithMappedPt(
+      quotas as unknown as RawQuotaWithRelations[],
     );
   }
 
@@ -180,8 +198,8 @@ export class QuotasService {
       );
     }
 
-    return currentSub.quotas.map((q) =>
-      this.mapQuotaDetail(q as unknown as RawQuotaWithRelations),
+    return this.ptCredits.mapSubscriptionQuotasWithMappedPt(
+      currentSub.quotas as unknown as RawQuotaWithRelations[],
     );
   }
 
@@ -190,6 +208,9 @@ export class QuotasService {
     serviceTypeCode: string,
     amount: number = 1,
   ): Promise<CanUseResult> {
+    if (serviceTypeCode === ServiceTypeCode.PT) {
+      return this.ptCredits.canUseSubscriptionPtQuota(subscriptionId, amount);
+    }
     if (!amount || amount <= 0 || !Number.isInteger(amount)) {
       return {
         allowed: false,
@@ -227,7 +248,10 @@ export class QuotasService {
       now,
     );
 
-    if (effective !== SubscriptionStatus.ACTIVE || now < new Date(sub.startDate)) {
+    if (
+      effective !== SubscriptionStatus.ACTIVE ||
+      now < new Date(sub.startDate)
+    ) {
       return {
         allowed: false,
         reason: 'SUBSCRIPTION_NOT_ACTIVE',
@@ -236,7 +260,9 @@ export class QuotasService {
       };
     }
 
-    const quota = sub.quotas.find((q) => q.serviceType.code === serviceTypeCode);
+    const quota = sub.quotas.find(
+      (q) => q.serviceType.code === serviceTypeCode,
+    );
     if (!quota) {
       return {
         allowed: false,
@@ -254,7 +280,10 @@ export class QuotasService {
       };
     }
 
-    const remaining = Math.max(0, quota.allocated - quota.used - quota.reserved);
+    const remaining = Math.max(
+      0,
+      quota.allocated - quota.used - quota.reserved,
+    );
     if (remaining >= amount) {
       return {
         allowed: true,
@@ -276,9 +305,19 @@ export class QuotasService {
     serviceTypeCode: string,
     ctx: QuotaOperationContext = {},
   ): Promise<SubscriptionQuotaDetail> {
+    if (serviceTypeCode === ServiceTypeCode.PT) {
+      return this.ptCredits.mutateSubscriptionPtQuota(
+        subscriptionId,
+        'QUOTA_RESERVE',
+        ctx,
+      );
+    }
+
     const amount = ctx.amount ?? 1;
     if (!amount || amount <= 0 || !Number.isInteger(amount)) {
-      throw new BadRequestException('Reservation amount must be a positive integer');
+      throw new BadRequestException(
+        'Reservation amount must be a positive integer',
+      );
     }
 
     const idempotencyKey = ctx.idempotencyKey ?? randomUUID();
@@ -294,6 +333,18 @@ export class QuotasService {
           },
         });
         if (existingTx) {
+          if (
+            !existingTx.quota ||
+            existingTx.subscriptionId !== subscriptionId ||
+            existingTx.quota.serviceType.code !== serviceTypeCode ||
+            existingTx.type !== QuotaTransactionType.RESERVE ||
+            (existingTx.quota.allocated !== null &&
+              existingTx.reservedDelta !== amount)
+          ) {
+            throw new ConflictException(
+              `IDEMPOTENCY_PAYLOAD_MISMATCH: Idempotency key "${idempotencyKey}" was already used with different parameters.`,
+            );
+          }
           return existingTx.quota;
         }
 
@@ -322,7 +373,10 @@ export class QuotasService {
           now,
         );
 
-        if (effective !== SubscriptionStatus.ACTIVE || now < new Date(sub.startDate)) {
+        if (
+          effective !== SubscriptionStatus.ACTIVE ||
+          now < new Date(sub.startDate)
+        ) {
           throw new ConflictException(
             `Cannot reserve quota on subscription with effective status "${effective}"`,
           );
@@ -379,7 +433,9 @@ export class QuotasService {
         });
       });
 
-      return this.mapQuotaDetail(updatedQuota as unknown as RawQuotaWithRelations);
+      return this.mapQuotaDetail(
+        updatedQuota as unknown as RawQuotaWithRelations,
+      );
     } catch (error: unknown) {
       if (
         error instanceof ConflictException ||
@@ -390,7 +446,9 @@ export class QuotasService {
       }
       const prismaErr = error as { code?: string };
       if (prismaErr?.code === 'P2002' || prismaErr?.code === 'P2034') {
-        throw new ConflictException('Concurrent quota reservation conflict detected');
+        throw new ConflictException(
+          'Concurrent quota reservation conflict detected',
+        );
       }
       throw error;
     }
@@ -401,6 +459,14 @@ export class QuotasService {
     serviceTypeCode: string,
     ctx: QuotaOperationContext = {},
   ): Promise<SubscriptionQuotaDetail> {
+    if (serviceTypeCode === ServiceTypeCode.PT) {
+      return this.ptCredits.mutateSubscriptionPtQuota(
+        subscriptionId,
+        'QUOTA_USE',
+        ctx,
+      );
+    }
+
     const amount = ctx.amount ?? 1;
     if (!amount || amount <= 0 || !Number.isInteger(amount)) {
       throw new BadRequestException('Usage amount must be a positive integer');
@@ -419,6 +485,19 @@ export class QuotasService {
           },
         });
         if (existingTx) {
+          if (
+            !existingTx.quota ||
+            existingTx.subscriptionId !== subscriptionId ||
+            existingTx.quota.serviceType.code !== serviceTypeCode ||
+            existingTx.type !== QuotaTransactionType.USE ||
+            existingTx.reservedDelta !== 0 ||
+            (existingTx.quota.allocated !== null &&
+              existingTx.usedDelta !== amount)
+          ) {
+            throw new ConflictException(
+              `IDEMPOTENCY_PAYLOAD_MISMATCH: Idempotency key "${idempotencyKey}" was already used with different parameters.`,
+            );
+          }
           return existingTx.quota;
         }
 
@@ -447,7 +526,10 @@ export class QuotasService {
           now,
         );
 
-        if (effective !== SubscriptionStatus.ACTIVE || now < new Date(sub.startDate)) {
+        if (
+          effective !== SubscriptionStatus.ACTIVE ||
+          now < new Date(sub.startDate)
+        ) {
           throw new ConflictException(
             `Cannot use quota on subscription with effective status "${effective}"`,
           );
@@ -504,7 +586,9 @@ export class QuotasService {
         });
       });
 
-      return this.mapQuotaDetail(updatedQuota as unknown as RawQuotaWithRelations);
+      return this.mapQuotaDetail(
+        updatedQuota as unknown as RawQuotaWithRelations,
+      );
     } catch (error: unknown) {
       if (
         error instanceof ConflictException ||
@@ -526,6 +610,14 @@ export class QuotasService {
     serviceTypeCode: string,
     ctx: QuotaOperationContext = {},
   ): Promise<SubscriptionQuotaDetail> {
+    if (serviceTypeCode === ServiceTypeCode.PT) {
+      return this.ptCredits.mutateSubscriptionPtQuota(
+        subscriptionId,
+        'QUOTA_CONSUME_RESERVED',
+        ctx,
+      );
+    }
+
     const amount = ctx.amount ?? 1;
     if (!amount || amount <= 0 || !Number.isInteger(amount)) {
       throw new BadRequestException('Amount must be a positive integer');
@@ -543,6 +635,19 @@ export class QuotasService {
           },
         });
         if (existingTx) {
+          if (
+            !existingTx.quota ||
+            existingTx.subscriptionId !== subscriptionId ||
+            existingTx.quota.serviceType.code !== serviceTypeCode ||
+            existingTx.type !== QuotaTransactionType.USE ||
+            (existingTx.quota.allocated !== null &&
+              (existingTx.reservedDelta !== -amount ||
+                existingTx.usedDelta !== amount))
+          ) {
+            throw new ConflictException(
+              `IDEMPOTENCY_PAYLOAD_MISMATCH: Idempotency key "${idempotencyKey}" was already used with different parameters.`,
+            );
+          }
           return existingTx.quota;
         }
 
@@ -601,7 +706,9 @@ export class QuotasService {
         });
       });
 
-      return this.mapQuotaDetail(updatedQuota as unknown as RawQuotaWithRelations);
+      return this.mapQuotaDetail(
+        updatedQuota as unknown as RawQuotaWithRelations,
+      );
     } catch (error: unknown) {
       if (
         error instanceof ConflictException ||
@@ -612,7 +719,9 @@ export class QuotasService {
       }
       const prismaErr = error as { code?: string };
       if (prismaErr?.code === 'P2002' || prismaErr?.code === 'P2034') {
-        throw new ConflictException('Concurrent quota consumption conflict detected');
+        throw new ConflictException(
+          'Concurrent quota consumption conflict detected',
+        );
       }
       throw error;
     }
@@ -623,6 +732,14 @@ export class QuotasService {
     serviceTypeCode: string,
     ctx: QuotaOperationContext = {},
   ): Promise<SubscriptionQuotaDetail> {
+    if (serviceTypeCode === ServiceTypeCode.PT) {
+      return this.ptCredits.mutateSubscriptionPtQuota(
+        subscriptionId,
+        'QUOTA_REFUND_RESERVED',
+        ctx,
+      );
+    }
+
     const amount = ctx.amount ?? 1;
     if (!amount || amount <= 0 || !Number.isInteger(amount)) {
       throw new BadRequestException('Amount must be a positive integer');
@@ -640,6 +757,19 @@ export class QuotasService {
           },
         });
         if (existingTx) {
+          if (
+            !existingTx.quota ||
+            existingTx.subscriptionId !== subscriptionId ||
+            existingTx.quota.serviceType.code !== serviceTypeCode ||
+            existingTx.type !== QuotaTransactionType.REFUND ||
+            existingTx.usedDelta !== 0 ||
+            (existingTx.quota.allocated !== null &&
+              existingTx.reservedDelta !== -amount)
+          ) {
+            throw new ConflictException(
+              `IDEMPOTENCY_PAYLOAD_MISMATCH: Idempotency key "${idempotencyKey}" was already used with different parameters.`,
+            );
+          }
           return existingTx.quota;
         }
 
@@ -697,7 +827,9 @@ export class QuotasService {
         });
       });
 
-      return this.mapQuotaDetail(updatedQuota as unknown as RawQuotaWithRelations);
+      return this.mapQuotaDetail(
+        updatedQuota as unknown as RawQuotaWithRelations,
+      );
     } catch (error: unknown) {
       if (
         error instanceof ConflictException ||
@@ -708,7 +840,9 @@ export class QuotasService {
       }
       const prismaErr = error as { code?: string };
       if (prismaErr?.code === 'P2002' || prismaErr?.code === 'P2034') {
-        throw new ConflictException('Concurrent quota refund conflict detected');
+        throw new ConflictException(
+          'Concurrent quota refund conflict detected',
+        );
       }
       throw error;
     }
@@ -719,6 +853,14 @@ export class QuotasService {
     serviceTypeCode: string,
     ctx: QuotaOperationContext = {},
   ): Promise<SubscriptionQuotaDetail> {
+    if (serviceTypeCode === ServiceTypeCode.PT) {
+      return this.ptCredits.mutateSubscriptionPtQuota(
+        subscriptionId,
+        'QUOTA_REFUND_USED',
+        ctx,
+      );
+    }
+
     const amount = ctx.amount ?? 1;
     if (!amount || amount <= 0 || !Number.isInteger(amount)) {
       throw new BadRequestException('Amount must be a positive integer');
@@ -736,6 +878,19 @@ export class QuotasService {
           },
         });
         if (existingTx) {
+          if (
+            !existingTx.quota ||
+            existingTx.subscriptionId !== subscriptionId ||
+            existingTx.quota.serviceType.code !== serviceTypeCode ||
+            existingTx.type !== QuotaTransactionType.REFUND ||
+            existingTx.reservedDelta !== 0 ||
+            (existingTx.quota.allocated !== null &&
+              existingTx.usedDelta !== -amount)
+          ) {
+            throw new ConflictException(
+              `IDEMPOTENCY_PAYLOAD_MISMATCH: Idempotency key "${idempotencyKey}" was already used with different parameters.`,
+            );
+          }
           return existingTx.quota;
         }
 
@@ -793,7 +948,9 @@ export class QuotasService {
         });
       });
 
-      return this.mapQuotaDetail(updatedQuota as unknown as RawQuotaWithRelations);
+      return this.mapQuotaDetail(
+        updatedQuota as unknown as RawQuotaWithRelations,
+      );
     } catch (error: unknown) {
       if (
         error instanceof ConflictException ||
@@ -804,7 +961,9 @@ export class QuotasService {
       }
       const prismaErr = error as { code?: string };
       if (prismaErr?.code === 'P2002' || prismaErr?.code === 'P2034') {
-        throw new ConflictException('Concurrent quota refund conflict detected');
+        throw new ConflictException(
+          'Concurrent quota refund conflict detected',
+        );
       }
       throw error;
     }
@@ -816,20 +975,74 @@ export class QuotasService {
     actorId: string,
   ): Promise<SubscriptionQuotaDetail> {
     if (dto.allocatedDelta === undefined || dto.allocatedDelta === 0) {
-      throw new BadRequestException('allocatedDelta must be a non-zero integer');
+      throw new BadRequestException(
+        'allocatedDelta must be a non-zero integer',
+      );
     }
 
-    const idempotencyKey = randomUUID();
+    const target = await this.db.client.subscriptionQuota.findUnique({
+      where: { id: quotaId },
+      include: { serviceType: true },
+    });
+    if (!target) {
+      throw new NotFoundException(
+        `Subscription quota with ID "${quotaId}" not found`,
+      );
+    }
+
+    if (
+      !GYM_SERVICE_SCOPE.personalTraining &&
+      target.serviceType.code === ServiceTypeCode.PT
+    ) {
+      throw new GoneException(
+        'Dịch vụ PT 1–1 đã ngừng cung cấp. Dữ liệu cũ chỉ được giữ để tra cứu và đối chiếu.',
+      );
+    }
+
+    if (target.serviceType.code === ServiceTypeCode.PT) {
+      const result = await this.ptCredits.adjustPtQuota(quotaId, dto, actorId);
+      this.logger.log(
+        `Adjusted PT quota ${quotaId} by ${dto.allocatedDelta} (Actor: ${actorId}). Reason: ${dto.reason}`,
+      );
+      return result;
+    }
+
+    const idempotencyKey = dto.idempotencyKey?.trim() || randomUUID();
+    const reason = dto.reason.trim();
 
     try {
       const updatedQuota = await this.db.client.$transaction(async (tx) => {
+        const existingTx = await tx.quotaTransaction.findUnique({
+          where: { idempotencyKey },
+          include: {
+            quota: { include: { serviceType: true } },
+          },
+        });
+        if (existingTx) {
+          if (
+            !existingTx.quota ||
+            existingTx.quotaId !== quotaId ||
+            existingTx.type !== QuotaTransactionType.ADJUST ||
+            existingTx.allocatedDelta !== dto.allocatedDelta ||
+            existingTx.reason !== reason ||
+            existingTx.createdBy !== actorId
+          ) {
+            throw new ConflictException(
+              `IDEMPOTENCY_PAYLOAD_MISMATCH: Idempotency key "${idempotencyKey}" was already used with different parameters.`,
+            );
+          }
+          return existingTx.quota;
+        }
+
         const quota = await tx.subscriptionQuota.findUnique({
           where: { id: quotaId },
           include: { serviceType: true },
         });
 
         if (!quota) {
-          throw new NotFoundException(`Subscription quota with ID "${quotaId}" not found`);
+          throw new NotFoundException(
+            `Subscription quota with ID "${quotaId}" not found`,
+          );
         }
 
         if (quota.allocated === null) {
@@ -861,7 +1074,7 @@ export class QuotasService {
             reservedDelta: 0,
             usedDelta: 0,
             idempotencyKey,
-            reason: dto.reason.trim(),
+            reason,
             createdBy: actorId,
           },
         });
@@ -876,7 +1089,9 @@ export class QuotasService {
         `Adjusted quota ${quotaId} by ${dto.allocatedDelta} (Actor: ${actorId}). Reason: ${dto.reason}`,
       );
 
-      return this.mapQuotaDetail(updatedQuota as unknown as RawQuotaWithRelations);
+      return this.mapQuotaDetail(
+        updatedQuota as unknown as RawQuotaWithRelations,
+      );
     } catch (error: unknown) {
       if (
         error instanceof ConflictException ||
@@ -887,7 +1102,9 @@ export class QuotasService {
       }
       const prismaErr = error as { code?: string };
       if (prismaErr?.code === 'P2002' || prismaErr?.code === 'P2034') {
-        throw new ConflictException('Concurrent quota adjustment conflict detected');
+        throw new ConflictException(
+          'Concurrent quota adjustment conflict detected',
+        );
       }
       throw error;
     }
@@ -902,7 +1119,9 @@ export class QuotasService {
     });
 
     if (!quota) {
-      throw new NotFoundException(`Subscription quota with ID "${quotaId}" not found`);
+      throw new NotFoundException(
+        `Subscription quota with ID "${quotaId}" not found`,
+      );
     }
 
     const {

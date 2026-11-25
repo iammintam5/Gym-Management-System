@@ -36,6 +36,7 @@ import {
   type PaginatedPaymentsResponse,
   type PaymentReceipt,
   type PaymentRecordDetail,
+  type SubscriptionDetail,
 } from '@gym/contracts';
 import { useAuthStore } from '@/stores/auth-store';
 import { DataState } from '@/components/shared/data-state';
@@ -47,6 +48,7 @@ import { TablePagination } from '@/components/shared/table-pagination';
 const PAGE_SIZE = 10;
 
 interface ReceiptRow {
+  isLegacyPt: boolean;
   id: string;
   memberId: string;
   receiptNo: string;
@@ -84,6 +86,8 @@ export default function StaffPosCashierPage() {
 
   // Toolbar Filters
   const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [filtersReady, setFiltersReady] = useState(false);
   const [methodFilter, setMethodFilter] = useState<'ALL' | 'CASH' | 'TRANSFER'>(
     'ALL',
   );
@@ -143,140 +147,205 @@ export default function StaffPosCashierPage() {
   const [refundSubmitting, setRefundSubmitting] = useState(false);
   const hasLoadedRef = useRef(false);
   const [profileMemberId, setProfileMemberId] = useState('');
+
   useEffect(() => {
     const timer = window.setTimeout(() => {
       const query = new URLSearchParams(window.location.search);
       setProfileMemberId(query.get('memberId') ?? '');
       setSearchQuery(query.get('search') ?? '');
+      setDebouncedSearch(query.get('search') ?? '');
+      setFiltersReady(true);
     }, 0);
     return () => window.clearTimeout(timer);
   }, []);
 
-  const loadPosData = useCallback(async () => {
-    const loadSeq = ++posLoadSeq.current;
-    if (!hasLoadedRef.current) {
-      setLoading(true);
-    }
-    setLoadError('');
-    const [paymentsRes, membersRes, plansRes] = await Promise.allSettled([
-      apiClient<PaginatedPaymentsResponse>(
-        `/payments?limit=${PAGE_SIZE}&page=${currentPage}${profileMemberId ? `&memberId=${encodeURIComponent(profileMemberId)}` : ''}&search=${encodeURIComponent(searchQuery)}${methodFilter === 'ALL' ? '' : `&method=${methodFilter}`}${statusFilter === 'ALL' ? '' : `&status=${statusFilter.toUpperCase()}`}`,
-      ),
-      apiClient<PaginatedMembersResponse>(
-        '/members?limit=100&includePhoto=false',
-      ),
-      apiClient<PaginatedMembershipPlansResponse>('/membership-plans?limit=50'),
-    ]);
-
-    if (loadSeq !== posLoadSeq.current) return;
-    setLoading(false);
-    if (
-      [paymentsRes, membersRes, plansRes].some(
-        (result) => result.status === 'rejected',
-      )
-    ) {
-      setLoadError('Không thể tải đầy đủ dữ liệu. Vui lòng thử lại.');
-      return;
-    }
-    hasLoadedRef.current = true;
-    if (paymentsRes.status === 'fulfilled') {
-      const data = paymentsRes.value.data;
-      setReceiptTotal(paymentsRes.value.meta.total);
-      setCurrentPage((previous) =>
-        Math.min(previous, Math.max(1, paymentsRes.value.meta.totalPages)),
-      );
-      setReceipts(
-        data.map((p: PaymentRecordDetail) => ({
-          id: p.id,
-          receiptNo: formatReceiptNumber(p.id, p.confirmedAt ?? p.createdAt),
-          memberCode: p.memberCode,
-          memberName: p.memberFullName,
-          memberId: p.memberId,
-          planName: p.subscription?.planName ?? 'Gói hội viên',
-          methodCode: normalizeMethodCode(p.method),
-          methodLabel: mapMethodLabel(p.method),
-          amount: formatVnd(p.amount),
-          status:
-            p.status === PaymentStatus.PAID
-              ? 'Paid'
-              : p.status === PaymentStatus.REFUNDED
-                ? 'Refunded'
-                : 'Pending',
-          createdAt: `${new Date(p.createdAt).toLocaleDateString('vi-VN')} ${new Date(
-            p.createdAt,
-          ).toLocaleTimeString('vi-VN', {
-            hour: '2-digit',
-            minute: '2-digit',
-          })}`,
-        })),
-      );
-    }
-
-    if (membersRes.status === 'fulfilled') {
-      const mOpts = membersRes.value.data.map((m) => ({
-        id: m.id,
-        code: m.memberCode,
-        name: m.fullName,
-      }));
-      setMemberOptions(mOpts);
-    }
-
-    if (plansRes.status === 'fulfilled') {
-      const activePlans = plansRes.value.data.filter(
-        (p: MembershipPlanDetail) => p.isActive,
-      );
-      setRawActivePlans(activePlans);
-      const pOpts = activePlans.map((p: MembershipPlanDetail) => ({
-        id: p.id,
-        name: `${p.name} (${formatDurationVi(p.durationDays)})`,
-        price: p.price,
-        durationDays: p.durationDays,
-      }));
-      setPlanOptions(pOpts);
-      if (pOpts[0]) {
-        setPosPlanId((prev) => prev || pOpts[0]!.id);
-      }
-    }
-  }, [currentPage, searchQuery, methodFilter, statusFilter, profileMemberId]);
+  const [catalogLoading, setCatalogLoading] = useState(false);
+  const [catalogError, setCatalogError] = useState('');
+  const [catalogRetry, setCatalogRetry] = useState(0);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => {
-      void loadPosData();
-    }, 250);
-    return () => window.clearTimeout(timer);
-  }, [loadPosData]);
-
-  useEffect(() => {
-    if (!posModalOpen) return;
+    if (!(posModalOpen || onboardingModalOpen)) return;
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
+      setCatalogLoading(true);
+      setCatalogError('');
       void apiClient
-        .get<PaginatedMembersResponse>(
-          `/members?limit=100&includePhoto=false&search=${encodeURIComponent(posMemberSearch)}`,
-          { signal: controller.signal },
-        )
-        .then((response) =>
-          setMemberOptions(
-            response.data.map((member) => ({
-              id: member.id,
-              code: member.memberCode,
-              name: member.fullName,
+        .get<PaginatedMembershipPlansResponse>('/membership-plans?limit=50', {
+          signal: controller.signal,
+          skipCache: true,
+        })
+        .then((result) => {
+          if (controller.signal.aborted) return;
+          const activePlans = result.data.filter((plan) => plan.isActive);
+          setRawActivePlans(activePlans);
+          setPlanOptions(
+            activePlans.map((plan) => ({
+              id: plan.id,
+              name:
+                plan.name + ' (' + formatDurationVi(plan.durationDays) + ')',
+              price: plan.price,
+              durationDays: plan.durationDays,
             })),
-          ),
-        )
+          );
+          setPosPlanId((previous) =>
+            activePlans.some((plan) => plan.id === previous)
+              ? previous
+              : (activePlans[0]?.id ?? ''),
+          );
+        })
         .catch(() => {
           if (!controller.signal.aborted)
-            setFeedbackMsg('Không thể tìm hội viên. Vui lòng thử lại.');
+            setCatalogError('Không thể tải gói tập. Vui lòng thử lại.');
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) setCatalogLoading(false);
         });
-    }, 250);
+    }, 0);
     return () => {
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [posMemberSearch, posModalOpen]);
+  }, [posModalOpen, onboardingModalOpen, catalogRetry]);
+
+  useEffect(() => {
+    if (!filtersReady || searchQuery === debouncedSearch) return;
+    const timer = window.setTimeout(() => {
+      setDebouncedSearch(searchQuery);
+      setCurrentPage(1);
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [searchQuery, debouncedSearch, filtersReady]);
+  const loadPosData = useCallback(
+    async (signal?: AbortSignal) => {
+      const loadSeq = ++posLoadSeq.current;
+      if (!hasLoadedRef.current) setLoading(true);
+      setLoadError('');
+      const query = new URLSearchParams({
+        limit: String(PAGE_SIZE),
+        page: String(currentPage),
+        search: debouncedSearch,
+      });
+      if (profileMemberId) query.set('memberId', profileMemberId);
+      if (methodFilter !== 'ALL') query.set('method', methodFilter);
+      if (statusFilter !== 'ALL')
+        query.set('status', statusFilter.toUpperCase());
+      try {
+        const result = await apiClient<PaginatedPaymentsResponse>(
+          '/payments?' + query,
+          { signal, skipCache: true },
+        );
+        if (signal?.aborted || loadSeq !== posLoadSeq.current) return;
+        const data = result.data;
+        setReceiptTotal(result.meta.total);
+        setCurrentPage((previous) =>
+          Math.min(previous, Math.max(1, result.meta.totalPages)),
+        );
+        setReceipts(
+          data.map((p: PaymentRecordDetail) => ({
+            id: p.id,
+            receiptNo: formatReceiptNumber(p.id, p.confirmedAt ?? p.createdAt),
+            memberCode: p.memberCode,
+            memberName: p.memberFullName,
+            memberId: p.memberId,
+            isLegacyPt: Boolean(p.ptPurchase),
+            planName:
+              p.subscription?.planName ??
+              p.ptPurchase?.packageName ??
+              'Gói hội viên',
+            methodCode: normalizeMethodCode(p.method),
+            methodLabel: mapMethodLabel(p.method),
+            amount: formatVnd(p.amount),
+            status:
+              p.status === PaymentStatus.PAID
+                ? 'Paid'
+                : p.status === PaymentStatus.REFUNDED
+                  ? 'Refunded'
+                  : 'Pending',
+            createdAt: `${new Date(p.createdAt).toLocaleDateString('vi-VN')} ${new Date(
+              p.createdAt,
+            ).toLocaleTimeString('vi-VN', {
+              hour: '2-digit',
+              minute: '2-digit',
+            })}`,
+          })),
+        );
+        hasLoadedRef.current = true;
+      } catch {
+        if (!signal?.aborted && loadSeq === posLoadSeq.current)
+          setLoadError('Không thể tải biên lai. Vui lòng thử lại.');
+      } finally {
+        if (!signal?.aborted && loadSeq === posLoadSeq.current)
+          setLoading(false);
+      }
+    },
+    [currentPage, debouncedSearch, methodFilter, statusFilter, profileMemberId],
+  );
+
+  useEffect(() => {
+    if (!filtersReady) return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(
+      () => void loadPosData(controller.signal),
+      0,
+    );
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [loadPosData, filtersReady]);
+
+  const [memberSearchLoading, setMemberSearchLoading] = useState(false);
+  const [memberSearchError, setMemberSearchError] = useState('');
+  const [memberSearchRetry, setMemberSearchRetry] = useState(0);
+  const previousMemberSearch = useRef('');
+  useEffect(() => {
+    if (!posModalOpen) return;
+    const controller = new AbortController();
+    const delay = previousMemberSearch.current === posMemberSearch ? 0 : 250;
+    previousMemberSearch.current = posMemberSearch;
+    const timer = window.setTimeout(() => {
+      setMemberSearchLoading(true);
+      setMemberSearchError('');
+      void apiClient
+        .get<PaginatedMembersResponse>(
+          `/members?limit=20&includePhoto=false&search=${encodeURIComponent(posMemberSearch)}`,
+          { signal: controller.signal },
+        )
+        .then((response) => {
+          if (!controller.signal.aborted)
+            setMemberOptions(
+              response.data.map((member) => ({
+                id: member.id,
+                code: member.memberCode,
+                name: member.fullName,
+              })),
+            );
+        })
+        .catch(() => {
+          if (!controller.signal.aborted)
+            setMemberSearchError('Không thể tìm hội viên. Vui lòng thử lại.');
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) setMemberSearchLoading(false);
+        });
+    }, delay);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [posMemberSearch, posModalOpen, memberSearchRetry]);
 
   const handleCreatePosSubscription = async () => {
-    if (!posMemberId || !posPlanId || posSubmitting) return;
+    if (
+      !posMemberId ||
+      !posPlanId ||
+      posSubmitting ||
+      catalogLoading ||
+      catalogError ||
+      memberSearchLoading ||
+      memberSearchError
+    )
+      return;
     const selMember = memberOptions.find((m) => m.id === posMemberId);
     if (!selMember) {
       setFeedbackMsg('Vui lòng chọn lại hội viên từ kết quả tìm kiếm.');
@@ -297,13 +366,14 @@ export default function StaffPosCashierPage() {
     };
 
     try {
-      await apiClient('/subscriptions', {
+      await apiClient<SubscriptionDetail>('/subscriptions', {
         method: 'POST',
         body: JSON.stringify({
           ...payload,
           idempotencyKey: stableStaffRequestKey(posRequestKey, payload),
         }),
       });
+
       posRequestKey.current = null;
       await loadPosData();
       setPosModalOpen(false);
@@ -327,7 +397,9 @@ export default function StaffPosCashierPage() {
     try {
       await apiClient(`/payments/${rec.id}/confirm`, {
         method: 'POST',
-        body: JSON.stringify({ method: rec.methodCode }),
+        body: JSON.stringify({
+          method: rec.methodCode === 'CARD' ? 'TRANSFER' : rec.methodCode,
+        }),
       });
       await loadPosData();
       setFeedbackMsg(`Đã xác nhận thu tiền cho biên lai ${rec.receiptNo}.`);
@@ -444,6 +516,7 @@ export default function StaffPosCashierPage() {
             <UserPlus className="h-4 w-4 text-[#FF5500]" />
             Đăng ký hội viên mới
           </button>
+
           <button
             type="button"
             onClick={() => {
@@ -473,6 +546,7 @@ export default function StaffPosCashierPage() {
             onClick={() => {
               setProfileMemberId('');
               setSearchQuery('');
+              setDebouncedSearch('');
               setCurrentPage(1);
               window.history.replaceState(null, '', '/dashboard/staff/pos');
             }}
@@ -505,7 +579,6 @@ export default function StaffPosCashierPage() {
               value={searchQuery}
               onChange={(e) => {
                 setSearchQuery(e.target.value);
-                setCurrentPage(1);
               }}
               placeholder="Tìm theo mã biên lai REC-..., tên hoặc mã hội viên..."
               className="h-10 w-full rounded-xl border border-white/[0.08] bg-[#18181C] pl-10 pr-4 text-[13px] text-white placeholder-zinc-500 focus:border-[#FF5500] focus:outline-none"
@@ -627,7 +700,7 @@ export default function StaffPosCashierPage() {
                     </td>
                     <td className="py-3.5 text-right">
                       <div className="inline-flex items-center gap-1.5">
-                        {rec.status === 'Pending' && (
+                        {rec.status === 'Pending' && !rec.isLegacyPt && (
                           <button
                             type="button"
                             onClick={() => void handleConfirmPaid(rec)}
@@ -704,6 +777,24 @@ export default function StaffPosCashierPage() {
             </div>
 
             <div className="mt-4 space-y-3.5">
+              {catalogLoading && (
+                <p role="status" className="text-sm text-zinc-400">
+                  Đang tải gói tập…
+                </p>
+              )}
+              {catalogError && (
+                <p role="alert" className="text-sm text-amber-300">
+                  {catalogError}{' '}
+                  <button
+                    type="button"
+                    className="underline"
+                    onClick={() => setCatalogRetry((value) => value + 1)}
+                  >
+                    Thử lại
+                  </button>
+                </p>
+              )}
+
               <div>
                 <label className="block text-[13px] font-medium text-zinc-400">
                   Hội viên
@@ -715,10 +806,30 @@ export default function StaffPosCashierPage() {
                     const q = e.target.value;
                     setPosMemberSearch(q);
                     setPosMemberId('');
+                    setMemberOptions([]);
+                    setMemberSearchLoading(true);
                   }}
                   placeholder="Tìm nhanh theo tên hoặc mã MEM-XXXXXXXX..."
                   className="mt-1 h-8 w-full rounded-lg border border-white/[0.08] bg-[#18181C] px-3 text-[13px] text-white placeholder-zinc-500 focus:border-[#FF5500] focus:outline-none"
                 />
+                {memberSearchLoading && (
+                  <p role="status" className="mt-1 text-xs text-zinc-400">
+                    Đang tìm hội viên…
+                  </p>
+                )}
+                {memberSearchError && (
+                  <p role="alert" className="mt-1 text-xs text-amber-300">
+                    {memberSearchError}{' '}
+                    <button
+                      type="button"
+                      className="underline"
+                      onClick={() => setMemberSearchRetry((value) => value + 1)}
+                    >
+                      Thử lại
+                    </button>
+                  </p>
+                )}
+
                 <select
                   value={posMemberId}
                   onChange={(e) => setPosMemberId(e.target.value)}
@@ -882,7 +993,15 @@ export default function StaffPosCashierPage() {
               </button>
               <button
                 type="button"
-                disabled={posSubmitting || !posMemberId || !posPlanId}
+                disabled={
+                  posSubmitting ||
+                  !posMemberId ||
+                  !posPlanId ||
+                  catalogLoading ||
+                  Boolean(catalogError) ||
+                  memberSearchLoading ||
+                  Boolean(memberSearchError)
+                }
                 onClick={() => void handleCreatePosSubscription()}
                 className="h-9 rounded-xl bg-[#FF5500] px-4 text-[13px] font-semibold text-white hover:bg-[#E64D00] disabled:opacity-50"
               >
@@ -939,7 +1058,26 @@ export default function StaffPosCashierPage() {
               <div className="flex justify-between">
                 <span className="text-zinc-400">Gói tập đăng ký</span>
                 <span className="font-semibold text-white">
-                  {viewingReceipt.subscription.planName}
+                  {viewingReceipt.ptPurchase?.packageName ??
+                    viewingReceipt.subscription.planName}
+                </span>
+              </div>
+              {viewingReceipt.ptPurchase && (
+                <div className="flex justify-between">
+                  <span className="text-zinc-400">Buổi PT</span>
+                  <span className="text-zinc-200">
+                    {viewingReceipt.ptPurchase.sessionCount} buổi ·{' '}
+                    {viewingReceipt.ptPurchase.sessionMinutes} phút/buổi
+                  </span>
+                </div>
+              )}
+              <div className="flex justify-between">
+                <span className="text-zinc-400">Thời điểm thu</span>
+                <span className="text-zinc-200">
+                  {new Date(viewingReceipt.confirmedAt).toLocaleString(
+                    'vi-VN',
+                    { timeZone: 'Asia/Ho_Chi_Minh' },
+                  )}
                 </span>
               </div>
               <div className="flex justify-between">
@@ -1069,6 +1207,9 @@ export default function StaffPosCashierPage() {
         isOpen={onboardingModalOpen}
         onClose={() => setOnboardingModalOpen(false)}
         availablePlans={rawActivePlans}
+        plansLoading={catalogLoading}
+        plansError={catalogError}
+        onRetryPlans={() => setCatalogRetry((value) => value + 1)}
         onSuccess={(_result, summaryMessage) => {
           setFeedbackMsg(summaryMessage);
           void loadPosData();

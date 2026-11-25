@@ -1,3 +1,6 @@
+import { APP_GUARD } from '@nestjs/core';
+import { GymScopeGuard } from './common/gym-scope.guard';
+import { PtAssignmentsModule } from './modules/pt-assignments/pt-assignments.module';
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { resolve } from 'node:path';
@@ -17,6 +20,7 @@ import { ClassSchedulesModule } from './modules/class-schedules/class-schedules.
 import { ClassBookingsModule } from './modules/class-bookings/class-bookings.module';
 import { TrainersModule } from './modules/trainers/trainers.module';
 import { PtBookingsModule } from './modules/pt-bookings/pt-bookings.module';
+import { PtPackagesModule } from './modules/pt-packages/pt-packages.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { ReportsModule } from './modules/reports/reports.module';
 import { AuditLogsModule } from './modules/audit-logs/audit-logs.module';
@@ -24,6 +28,10 @@ import { HealthModule } from './modules/health/health.module';
 import { DatabaseModule } from './modules/database/database.module';
 import { JobsModule } from './modules/jobs/jobs.module';
 @Module({
+  providers: [
+    GymScopeGuard,
+    { provide: APP_GUARD, useExisting: GymScopeGuard },
+  ],
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
@@ -45,6 +53,8 @@ import { JobsModule } from './modules/jobs/jobs.module';
     ClassBookingsModule,
     TrainersModule,
     PtBookingsModule,
+    PtPackagesModule,
+    PtAssignmentsModule,
     NotificationsModule,
     ReportsModule,
     AuditLogsModule,

@@ -4,12 +4,16 @@ import type {
   EmployeeDetail,
   PaginatedEmployeesResponse,
   PtAvailabilityDetail,
+  TrainerServiceFilter,
+  TrainerSummary,
   UpdateEmployeeRequest,
 } from '@gym/contracts';
 import { apiClient } from '@/services/api-client';
 
 export const trainersKeys = {
   all: ['trainers'] as const,
+  list: (service?: TrainerServiceFilter) =>
+    [...trainersKeys.all, 'list', service ?? 'ALL'] as const,
   employees: (query?: string) =>
     [...trainersKeys.all, 'employees', query ?? 'default'] as const,
   availabilities: (trainerId: string) =>
@@ -17,6 +21,10 @@ export const trainersKeys = {
 };
 
 export const trainersApi = {
+  getTrainers: (service?: TrainerServiceFilter) =>
+    apiClient<TrainerSummary[]>(
+      service ? `/trainers?service=${service}` : '/trainers',
+    ),
   getEmployees: (query = 'limit=100') =>
     apiClient<PaginatedEmployeesResponse>(`/employees?${query}`),
   getMyProfile: () => apiClient<EmployeeDetail>('/employees/me'),

@@ -3,6 +3,7 @@ export * from './users';
 export * from './members';
 export * from './employees';
 export * from './membership-plans';
+export * from './pt-packages';
 export * from './subscriptions';
 export * from './checkins';
 export * from './classes';

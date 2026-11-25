@@ -64,6 +64,13 @@ export class QueryPaymentsDto {
   subscriptionId?: string;
 
   @ApiPropertyOptional({
+    description: 'Filter by PT Package Purchase ID (UUID)',
+  })
+  @IsOptional()
+  @IsUUID()
+  ptPurchaseId?: string;
+
+  @ApiPropertyOptional({
     description: 'Filter by Member ID (UUID)',
   })
   @IsOptional()

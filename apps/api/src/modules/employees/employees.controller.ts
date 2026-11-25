@@ -43,7 +43,7 @@ export class EmployeesController {
   @ApiOperation({
     summary: 'Create a new employee (Admin only)',
     description:
-      'Creates a user account, assigns the STAFF or PT role, and creates an employee profile atomically.',
+      'Creates a user account, assigns the STAFF or TRAINER role, and creates an employee profile atomically.',
   })
   @ApiOkResponse({ description: 'Employee successfully created' })
   @ApiConflictResponse({ description: 'Email or phone already in use' })
@@ -68,27 +68,27 @@ export class EmployeesController {
   }
 
   @Get('me')
-  @Roles(UserRole.STAFF, UserRole.PT)
+  @Roles(UserRole.STAFF, UserRole.TRAINER)
   @ApiOperation({
-    summary: 'Get current employee profile (Staff & PT self-service)',
+    summary: 'Get current employee profile (Staff & Trainer self-service)',
   })
   @ApiOkResponse({ description: 'Current employee profile' })
   @ApiNotFoundResponse({ description: 'Employee profile not found for current user' })
-  @ApiForbiddenResponse({ description: 'Forbidden (Staff/PT only)' })
+  @ApiForbiddenResponse({ description: 'Forbidden (Staff/Trainer only)' })
   @ApiUnauthorizedResponse({ description: 'Unauthorized' })
   async findMe(@CurrentUser() currentUser: AuthUser): Promise<EmployeeDetail> {
     return this.employeesService.findSelf(currentUser.id);
   }
 
   @Patch('me')
-  @Roles(UserRole.STAFF, UserRole.PT)
+  @Roles(UserRole.STAFF, UserRole.TRAINER)
   @ApiOperation({
-    summary: 'Update current employee profile (Staff & PT self-service)',
+    summary: 'Update current employee profile (Staff & Trainer self-service)',
     description:
-      'Allows employee to update only allowed profile fields (fullName, phone, specialization).',
+      'Allows employee to update only allowed profile fields (fullName, phone, specialization, specialties). Service capabilities remain admin-managed.',
   })
   @ApiOkResponse({ description: 'Employee profile successfully updated' })
-  @ApiForbiddenResponse({ description: 'Forbidden (Staff/PT only)' })
+  @ApiForbiddenResponse({ description: 'Forbidden (Staff/Trainer only)' })
   @ApiUnauthorizedResponse({ description: 'Unauthorized' })
   async updateMe(
     @CurrentUser() currentUser: AuthUser,

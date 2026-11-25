@@ -10,7 +10,7 @@
     "lint": "eslint .",
     "test:camera": "node --test test/camera-stream.test.cjs",
     "test:face": "node --test test/face-recognition.test.cjs",
-    "test:members": "node --test test/member-photo-onboarding.test.cjs test/staff-modal-flow.test.cjs",
+    "test:members": "node --test test/member-photo-onboarding.test.cjs test/staff-modal-flow.test.cjs test/member-profile-details.test.cjs",
     "test:cache": "node --test test/api-client-cache.test.cjs test/query-provider.test.cjs",
     "typecheck": "next typegen && tsc --noEmit",
     "test": "node --test test/*.test.cjs"

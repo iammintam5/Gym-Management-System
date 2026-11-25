@@ -98,7 +98,7 @@ test(
         );
         const results = await Promise.allSettled([
           payments.confirmPayment(pending.id, { method: 'CASH' }, actor),
-          payments.confirmPayment(pending.id, { method: 'CARD' }, actor),
+          payments.confirmPayment(pending.id, { method: 'TRANSFER' }, actor),
         ]);
         assert.equal(results.filter((r) => r.status === 'fulfilled').length, 1);
         assert.equal(
@@ -215,5 +215,28 @@ test(
       });
       assert.equal(response.meta.total, 0);
     });
+    await t.test(
+      'rejects legacy CARD for new payment writes while preserving historical CARD reads',
+      async () => {
+        const sub = await fixture();
+        await assert.rejects(
+          payments.createPayment(
+            sub.id,
+            { amount: 50, status: 'PAID', method: 'CARD' },
+            actor,
+          ),
+          (e) => e.getStatus() === 400,
+        );
+        const pending = await payments.createPayment(
+          sub.id,
+          { amount: 50, status: 'PENDING' },
+          actor,
+        );
+        await assert.rejects(
+          payments.confirmPayment(pending.id, { method: 'CARD' }, actor),
+          (e) => e.getStatus() === 400,
+        );
+      },
+    );
   },
 );

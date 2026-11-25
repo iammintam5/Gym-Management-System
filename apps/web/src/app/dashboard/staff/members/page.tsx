@@ -11,7 +11,7 @@ import { FaceConflicts } from '@/features/members/face-conflicts';
 
 import { formatVnd, formatDurationVi } from '@/lib/formatters';
 
-import { DataState, assertDataLoaded } from '@/components/shared/data-state';
+import { DataState } from '@/components/shared/data-state';
 
 import { StaffFormModal } from '@/components/ui/staff-form-modal';
 import { DiscardChangesDialog } from '@/components/ui/discard-changes-dialog';
@@ -40,7 +40,8 @@ import {
   UserRole,
   type MemberDetail,
   type MembershipPlanDetail,
-  type MemberDirectoryResponse,
+  type MemberDirectorySummaryResponse,
+  type MemberDirectorySubscriptionSummary,
   type PaginatedMembershipPlansResponse,
   type SubscriptionDetail,
   type SubscriptionQuotaDetail,
@@ -79,7 +80,6 @@ interface StaffMemberRecord {
   validWindow: string;
   hasQueuedRenewal: boolean;
   classQuotaShort: string;
-  ptQuotaShort: string;
   rawQuotas: ReadonlyArray<SubscriptionQuotaDetail>;
   status: 'Active' | 'Upcoming' | 'Frozen' | 'Expired' | 'None';
   avatarUrl: string | null;
@@ -148,10 +148,16 @@ export default function StaffMembersDirectoryPage() {
   const [isLoading, setIsLoading] = useState(true);
   const renewalRequestKey = useRef<StaffRequestKey | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [filtersReady, setFiltersReady] = useState(false);
   useEffect(() => {
-    const search = new URLSearchParams(window.location.search).get('search');
-    if (!search) return;
-    const timer = window.setTimeout(() => setSearchQuery(search), 0);
+    const timer = window.setTimeout(() => {
+      const search =
+        new URLSearchParams(window.location.search).get('search') ?? '';
+      setSearchQuery(search);
+      setDebouncedSearch(search);
+      setFiltersReady(true);
+    }, 0);
     return () => window.clearTimeout(timer);
   }, []);
   const [statusFilter, setStatusFilter] = useState('All');
@@ -396,47 +402,82 @@ export default function StaffMembersDirectoryPage() {
     }
   }, [membersList]);
 
-  const loadMembersDirectory = useCallback(async () => {
-    const loadSeq = ++directoryLoadSeq.current;
-    if (!hasLoadedRef.current) {
-      setLoading(true);
-    }
-    setLoadError('');
-    try {
+  const [catalogLoading, setCatalogLoading] = useState(false);
+  const [catalogError, setCatalogError] = useState('');
+  const [catalogRetry, setCatalogRetry] = useState(0);
+
+  useEffect(() => {
+    if (!(isRegisterOpen || Boolean(renewTarget))) return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      setCatalogLoading(true);
+      setCatalogError('');
+      void apiClient
+        .get<PaginatedMembershipPlansResponse>('/membership-plans?limit=50', {
+          signal: controller.signal,
+          skipCache: true,
+        })
+        .then((result) => {
+          if (controller.signal.aborted) return;
+          const activePlans = result.data.filter((plan) => plan.isActive);
+          setAvailablePlans(activePlans);
+          setRenewPlanId((previous) =>
+            activePlans.some((plan) => plan.id === previous)
+              ? previous
+              : renewTarget?.subscriptionId
+                ? ''
+                : (activePlans[0]?.id ?? ''),
+          );
+        })
+        .catch(() => {
+          if (!controller.signal.aborted)
+            setCatalogError('Không thể tải gói tập. Vui lòng thử lại.');
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) setCatalogLoading(false);
+        });
+    }, 0);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [isRegisterOpen, renewTarget, catalogRetry]);
+
+  useEffect(() => {
+    if (!filtersReady || searchQuery === debouncedSearch) return;
+    const timer = window.setTimeout(() => {
+      setDebouncedSearch(searchQuery);
+      setCurrentPage(1);
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [searchQuery, debouncedSearch, filtersReady]);
+  const loadMembersDirectory = useCallback(
+    async (signal?: AbortSignal) => {
+      const loadSeq = ++directoryLoadSeq.current;
       if (!hasLoadedRef.current) {
-        setIsLoading(true);
+        setLoading(true);
       }
+      setLoadError('');
+      try {
+        if (!hasLoadedRef.current) {
+          setIsLoading(true);
+        }
 
-      const [membersRes, plansRes] = await Promise.allSettled([
-        apiClient.get<MemberDirectoryResponse>(
-          `/members/directory?limit=${PAGE_SIZE}&page=${currentPage}&search=${encodeURIComponent(searchQuery)}&directoryStatus=${encodeURIComponent(statusFilter)}`,
-        ),
-        apiClient.get<PaginatedMembershipPlansResponse>(
-          '/membership-plans?limit=50',
-        ),
-      ]);
-      if (loadSeq !== directoryLoadSeq.current) return;
-      assertDataLoaded([plansRes], false);
-      assertDataLoaded([membersRes], false);
-
-      const rawMembers: MemberDetail[] =
-        membersRes.status === 'fulfilled' ? membersRes.value.data : [];
-      const rawSubs: SubscriptionDetail[] =
-        membersRes.status === 'fulfilled' ? membersRes.value.subscriptions : [];
-      if (membersRes.status === 'fulfilled')
-        setDirectoryTotal(membersRes.value.meta.total);
-      if (membersRes.status === 'fulfilled')
-        setCurrentPage((previous) =>
-          Math.min(previous, Math.max(1, membersRes.value.meta.totalPages)),
+        const result = await apiClient.get<MemberDirectorySummaryResponse>(
+          `/members/directory?summary=true&limit=${PAGE_SIZE}&page=${currentPage}&search=${encodeURIComponent(debouncedSearch)}&directoryStatus=${encodeURIComponent(statusFilter)}`,
+          { signal },
         );
-
-      if (plansRes.status === 'fulfilled') {
-        const activePlans = plansRes.value.data.filter((p) => p.isActive);
-        setAvailablePlans(activePlans);
-      }
-
-      if (membersRes.status === 'fulfilled') {
-        const primarySubByMember = new Map<string, SubscriptionDetail>();
+        if (signal?.aborted || loadSeq !== directoryLoadSeq.current) return;
+        const rawMembers: MemberDetail[] = result.data;
+        const rawSubs = result.subscriptions;
+        setDirectoryTotal(result.meta.total);
+        setCurrentPage((previous) =>
+          Math.min(previous, Math.max(1, result.meta.totalPages)),
+        );
+        const primarySubByMember = new Map<
+          string,
+          MemberDirectorySubscriptionSummary
+        >();
         const hasUpcomingByMember = new Set<string>();
 
         for (const sub of rawSubs) {
@@ -457,18 +498,12 @@ export default function StaffMembersDirectoryPage() {
           rawMembers.map((mem) => {
             const sub = primarySubByMember.get(mem.id);
             const classQ = sub?.quotas.find((q) => q.service === 'CLASS');
-            const ptQ = sub?.quotas.find((q) => q.service === 'PT');
 
             const classShort = classQ
               ? classQ.allocated === null
                 ? 'Class: KGH'
                 : `Class: ${Math.max(0, classQ.allocated - classQ.used - classQ.reserved)}/${classQ.allocated}`
               : 'Class: 0/0';
-            const ptShort = ptQ
-              ? ptQ.allocated === null
-                ? 'PT: KGH'
-                : `PT: ${Math.max(0, ptQ.allocated - ptQ.used - ptQ.reserved)}/${ptQ.allocated}`
-              : 'PT: 0/0';
 
             const uiStatus = sub
               ? mapSubStatusToUi(sub.effectiveStatus)
@@ -491,46 +526,55 @@ export default function StaffMembersDirectoryPage() {
                 : 'Chưa đăng ký',
               hasQueuedRenewal,
               classQuotaShort: classShort,
-              ptQuotaShort: ptShort,
-              rawQuotas: (sub?.quotas ?? []).map((q) => ({
-                id: q.id,
-                subscriptionId: sub?.id ?? '',
-                service: q.service,
-                serviceName: q.serviceName,
-                allocated: q.allocated,
-                used: q.used,
-                reserved: q.reserved,
-                unlimited: q.allocated === null,
-                remaining:
-                  q.allocated === null
-                    ? null
-                    : Math.max(0, q.allocated - q.used - q.reserved),
-                updatedAt: '',
-              })),
+              rawQuotas: (sub?.quotas ?? [])
+                .filter((q) => q.service !== 'PT')
+                .map((q) => ({
+                  id: q.id,
+                  subscriptionId: sub?.id ?? '',
+                  service: q.service,
+                  serviceName: q.serviceName,
+                  allocated: q.allocated,
+                  used: q.used,
+                  reserved: q.reserved,
+                  unlimited: q.allocated === null,
+                  remaining:
+                    q.allocated === null
+                      ? null
+                      : Math.max(0, q.allocated - q.used - q.reserved),
+                  updatedAt: '',
+                })),
               status: uiStatus,
               avatarUrl: mem.idPhotoUrl ?? null,
             };
           }),
         );
+
+        hasLoadedRef.current = true;
+      } catch {
+        if (signal?.aborted || loadSeq !== directoryLoadSeq.current) return;
+        setLoadError('Không thể tải đầy đủ dữ liệu. Vui lòng thử lại.');
+      } finally {
+        if (!signal?.aborted && loadSeq === directoryLoadSeq.current) {
+          setLoading(false);
+          setIsLoading(false);
+        }
       }
-      hasLoadedRef.current = true;
-    } catch {
-      if (loadSeq !== directoryLoadSeq.current) return;
-      setLoadError('Không thể tải đầy đủ dữ liệu. Vui lòng thử lại.');
-    } finally {
-      if (loadSeq === directoryLoadSeq.current) {
-        setLoading(false);
-        setIsLoading(false);
-      }
-    }
-  }, [currentPage, searchQuery, statusFilter]);
+    },
+    [currentPage, debouncedSearch, statusFilter],
+  );
 
   useEffect(() => {
-    const timer = window.setTimeout(() => {
-      void loadMembersDirectory();
-    }, 250);
-    return () => window.clearTimeout(timer);
-  }, [loadMembersDirectory]);
+    if (!filtersReady) return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(
+      () => void loadMembersDirectory(controller.signal),
+      0,
+    );
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [loadMembersDirectory, filtersReady]);
 
   const currentEditPhotoSrc = editDraft?.photoInput ?? '';
   const editPhotoStatus = resolvePhotoValidationStatus(
@@ -747,7 +791,7 @@ export default function StaffMembersDirectoryPage() {
 
   const handleRenewSubscription = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!renewTarget || isSubmitting) return;
+    if (!renewTarget || isSubmitting || catalogLoading || catalogError) return;
     const keyPayload = {
       memberId: renewTarget.memberId,
       subscriptionId: renewTarget.subscriptionId,
@@ -972,7 +1016,6 @@ export default function StaffMembersDirectoryPage() {
               value={searchQuery}
               onChange={(e) => {
                 setSearchQuery(e.target.value);
-                setCurrentPage(1);
               }}
               placeholder="Tìm theo họ tên, mã MEM-XXXXXXXX hoặc số điện thoại..."
               className="h-10 w-full rounded-xl border border-white/[0.08] bg-[#18181C] pl-10 pr-4 text-[13px] text-white placeholder-zinc-500 focus:border-[#FF5500] focus:outline-none"
@@ -1112,9 +1155,6 @@ export default function StaffMembersDirectoryPage() {
                         >
                           <span className="inline-flex items-center rounded-lg border border-white/[0.08] bg-[#18181C] px-2.5 py-1 font-mono text-zinc-200 transition-colors group-hover:border-[#FF5500]/50 group-hover:text-white">
                             {member.classQuotaShort}
-                          </span>
-                          <span className="inline-flex items-center rounded-lg border border-white/[0.08] bg-[#18181C] px-2.5 py-1 font-mono text-zinc-300 transition-colors group-hover:border-[#FF5500]/50 group-hover:text-white">
-                            {member.ptQuotaShort}
                           </span>
                         </button>
                       ) : (
@@ -1269,19 +1309,21 @@ export default function StaffMembersDirectoryPage() {
               name: member.fullName,
               subscriptionId: sub.id,
               plan: sub.plan.name,
-              rawQuotas: sub.quotas.map((quota) => ({
-                ...quota,
-                subscriptionId: sub.id,
-                unlimited: quota.allocated === null,
-                updatedAt: sub.updatedAt,
-                remaining:
-                  quota.allocated === null
-                    ? null
-                    : Math.max(
-                        0,
-                        quota.allocated - quota.used - quota.reserved,
-                      ),
-              })),
+              rawQuotas: sub.quotas
+                .filter((q) => q.service !== 'PT')
+                .map((quota) => ({
+                  ...quota,
+                  subscriptionId: sub.id,
+                  unlimited: quota.allocated === null,
+                  updatedAt: sub.updatedAt,
+                  remaining:
+                    quota.allocated === null
+                      ? null
+                      : Math.max(
+                          0,
+                          quota.allocated - quota.used - quota.reserved,
+                        ),
+                })),
             });
           }}
           onCancel={(member, sub) => {
@@ -1335,6 +1377,9 @@ export default function StaffMembersDirectoryPage() {
         isOpen={isRegisterOpen}
         onClose={() => setIsRegisterOpen(false)}
         availablePlans={availablePlans}
+        plansLoading={catalogLoading}
+        plansError={catalogError}
+        onRetryPlans={() => setCatalogRetry((value) => value + 1)}
         onSuccess={(_result, summaryMessage) => {
           setFeedbackBanner(summaryMessage);
           void loadMembersDirectory();
@@ -1616,7 +1661,12 @@ export default function StaffMembersDirectoryPage() {
               </button>
               <button
                 type="submit"
-                disabled={isSubmitting || !renewalPlan}
+                disabled={
+                  isSubmitting ||
+                  !renewalPlan ||
+                  catalogLoading ||
+                  Boolean(catalogError)
+                }
                 className="min-h-9 rounded-xl bg-[#FF5500] px-4 py-2 text-[13px] font-semibold text-white hover:bg-[#E64D00] disabled:opacity-50"
               >
                 {isSubmitting
@@ -1626,6 +1676,23 @@ export default function StaffMembersDirectoryPage() {
             </>
           }
         >
+          {catalogLoading && (
+            <p role="status" className="text-sm text-zinc-400">
+              Đang tải gói tập…
+            </p>
+          )}
+          {catalogError && (
+            <p role="alert" className="text-sm text-amber-300">
+              {catalogError}{' '}
+              <button
+                type="button"
+                className="underline"
+                onClick={() => setCatalogRetry((value) => value + 1)}
+              >
+                Thử lại
+              </button>
+            </p>
+          )}
           {feedbackBanner && (
             <p
               role="alert"
@@ -1838,7 +1905,7 @@ export default function StaffMembersDirectoryPage() {
             {/* Section 1: Dual-Phase Quota Progress Meters */}
             <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
               {quotaTarget.rawQuotas
-                .filter((q) => q.service === 'CLASS' || q.service === 'PT')
+                .filter((q) => q.service === 'CLASS')
                 .map((q) => (
                   <div
                     key={q.id}

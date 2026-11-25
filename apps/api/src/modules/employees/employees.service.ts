@@ -1,16 +1,25 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   Logger,
   NotFoundException,
 } from '@nestjs/common';
 import bcrypt from 'bcryptjs';
 import {
+  defaultEmployeeCapabilitiesForRole,
+  formatSpecialtiesSummary,
+  normalizePersistedUserRoles,
+  normalizeSpecialties,
+  seedSpecialtiesFromSpecialization,
+  TrainerServiceFilter,
   UserRole,
   type EmployeeDetail,
   type PaginatedEmployeesResponse,
 } from '@gym/contracts';
+import type { Prisma } from '@gym/database';
+import { lockScheduleWrites } from '../common/booking-access';
 import { DatabaseService } from '../database/database.module';
 import type { CreateEmployeeDto } from './dto/create-employee.dto';
 import type { UpdateEmployeeDto } from './dto/update-employee.dto';
@@ -29,6 +38,9 @@ export class EmployeesService {
     fullName: string;
     phone: string | null;
     specialization: string | null;
+    specialties?: string[];
+    canTeachClasses?: boolean;
+    canCoachPt?: boolean;
     hiredAt: Date | null;
     createdAt: Date;
     updatedAt: Date;
@@ -45,15 +57,70 @@ export class EmployeesService {
       fullName: profile.fullName,
       phone: profile.phone ?? null,
       specialization: profile.specialization ?? null,
+      specialties: profile.specialties ?? [],
+      canTeachClasses: Boolean(profile.canTeachClasses),
+      canCoachPt: Boolean(profile.canCoachPt),
       hiredAt: profile.hiredAt
         ? profile.hiredAt.toISOString().split('T')[0]
         : null,
       email: profile.user.email,
       isActive: profile.user.isActive,
-      roles: profile.user.roles.map((r) => r.role.code as UserRole),
+      roles: normalizePersistedUserRoles(
+        profile.user.roles.map((r) => r.role.code),
+      ),
       createdAt: profile.createdAt.toISOString(),
       updatedAt: profile.updatedAt.toISOString(),
     };
+  }
+
+  private resolveTrainerSpecialtyUpdate(
+    currentSpecialization: string | null,
+    dto: { specialization?: string | null; specialties?: string[] },
+  ): { specialization?: string | null; specialties?: string[] } {
+    if (dto.specialties !== undefined) {
+      const specialties = normalizeSpecialties(dto.specialties);
+      const specialization =
+        dto.specialization !== undefined
+          ? dto.specialization
+            ? dto.specialization.trim() || null
+            : null
+          : formatSpecialtiesSummary(specialties);
+      return { specialties, specialization };
+    }
+
+    if (dto.specialization !== undefined) {
+      const trimmed = dto.specialization
+        ? dto.specialization.trim() || null
+        : null;
+      return trimmed !== currentSpecialization
+        ? {
+            specialization: trimmed,
+            specialties: seedSpecialtiesFromSpecialization(trimmed),
+          }
+        : { specialization: trimmed };
+    }
+
+    return {};
+  }
+
+  private assertNonTrainerRestrictions(
+    dto: {
+      canTeachClasses?: boolean;
+      canCoachPt?: boolean;
+      specialties?: string[];
+    },
+    contextMessagePrefix: string,
+  ): void {
+    if (dto.canTeachClasses === true || dto.canCoachPt === true) {
+      throw new BadRequestException(
+        `${contextMessagePrefix} cannot be granted trainer service capabilities`,
+      );
+    }
+    if (dto.specialties && normalizeSpecialties(dto.specialties).length > 0) {
+      throw new BadRequestException(
+        `${contextMessagePrefix} cannot be assigned trainer specialties`,
+      );
+    }
   }
 
   private handlePrismaError(error: unknown): never {
@@ -80,8 +147,33 @@ export class EmployeesService {
   }
 
   async create(dto: CreateEmployeeDto): Promise<EmployeeDetail> {
-    if (dto.role !== UserRole.STAFF && dto.role !== UserRole.PT) {
-      throw new BadRequestException('Role must be either STAFF or PT');
+    if (dto.role !== UserRole.STAFF && dto.role !== UserRole.TRAINER) {
+      throw new BadRequestException('Role must be either STAFF or TRAINER');
+    }
+
+    const defaults = defaultEmployeeCapabilitiesForRole(dto.role);
+    let canTeachClasses = defaults.canTeachClasses;
+    let canCoachPt = defaults.canCoachPt;
+    let specialization: string | null = dto.specialization?.trim() || null;
+    let specialties: string[] = [];
+
+    if (dto.role !== UserRole.TRAINER) {
+      this.assertNonTrainerRestrictions(dto, 'Staff employees');
+      canTeachClasses = false;
+      canCoachPt = false;
+      specialties = [];
+    } else {
+      canTeachClasses = dto.canTeachClasses ?? defaults.canTeachClasses;
+      canCoachPt = dto.canCoachPt ?? defaults.canCoachPt;
+      if (dto.specialties !== undefined) {
+        specialties = normalizeSpecialties(dto.specialties);
+        specialization =
+          dto.specialization !== undefined
+            ? specialization
+            : formatSpecialtiesSummary(specialties);
+      } else {
+        specialties = seedSpecialtiesFromSpecialization(specialization);
+      }
     }
 
     const email = dto.email.trim().toLowerCase();
@@ -121,7 +213,7 @@ export class EmployeesService {
           },
         });
 
-        // 2. Assign Employee Role (STAFF or PT)
+        // 2. Assign Employee Role (STAFF or TRAINER)
         await tx.userRoleAssignment.create({
           data: {
             userId: user.id,
@@ -135,7 +227,10 @@ export class EmployeesService {
             userId: user.id,
             fullName: dto.fullName.trim(),
             phone: dto.phone?.trim() || null,
-            specialization: dto.specialization?.trim() || null,
+            specialization,
+            specialties,
+            canTeachClasses,
+            canCoachPt,
             hiredAt: dto.hiredAt ? new Date(dto.hiredAt) : null,
           },
           include: {
@@ -168,7 +263,7 @@ export class EmployeesService {
     const limit = Math.min(100, Math.max(1, query.limit || 20));
     const skip = (page - 1) * limit;
 
-    const where: Record<string, unknown> = {};
+    const where: Prisma.EmployeeProfileWhereInput = {};
 
     if (query.search?.trim()) {
       const search = query.search.trim();
@@ -176,11 +271,18 @@ export class EmployeesService {
         { fullName: { contains: search, mode: 'insensitive' } },
         { phone: { contains: search, mode: 'insensitive' } },
         { specialization: { contains: search, mode: 'insensitive' } },
+        { specialties: { has: search } },
         { user: { email: { contains: search, mode: 'insensitive' } } },
       ];
     }
 
-    const userFilters: Record<string, unknown> = {};
+    if (query.service === TrainerServiceFilter.CLASS) {
+      where.canTeachClasses = true;
+    } else if (query.service === TrainerServiceFilter.PT) {
+      where.canCoachPt = true;
+    }
+
+    const userFilters: Prisma.UserWhereInput = {};
 
     if (query.isActive !== undefined) {
       userFilters.isActive = query.isActive;
@@ -326,13 +428,57 @@ export class EmployeesService {
     userId: string,
     dto: UpdateEmployeeSelfDto,
   ): Promise<EmployeeDetail> {
+    const rawDto = dto as Record<string, unknown>;
+    if ('canTeachClasses' in rawDto || 'canCoachPt' in rawDto) {
+      throw new ForbiddenException(
+        'Trainers cannot modify their own service capabilities',
+      );
+    }
+
     const existing = await this.db.client.employeeProfile.findUnique({
       where: { userId },
+      include: {
+        user: {
+          include: {
+            roles: {
+              include: {
+                role: true,
+              },
+            },
+          },
+        },
+      },
     });
 
     if (!existing) {
       throw new NotFoundException(
         'Employee profile not found for current user',
+      );
+    }
+
+    const hasTrainerRole = normalizePersistedUserRoles(
+      existing.user.roles.map((r) => r.role.code),
+    ).includes(UserRole.TRAINER);
+
+    let specialtyPatch: { specialization?: string | null; specialties?: string[] } =
+      {};
+    if (!hasTrainerRole) {
+      if (dto.specialties && normalizeSpecialties(dto.specialties).length > 0) {
+        throw new BadRequestException(
+          'Staff employees cannot be assigned trainer specialties',
+        );
+      }
+      if (dto.specialization !== undefined) {
+        specialtyPatch = {
+          specialization: dto.specialization
+            ? dto.specialization.trim() || null
+            : null,
+        };
+      }
+    } else {
+      specialtyPatch = this.resolveTrainerSpecialtyUpdate(
+        existing.specialization ?? null,
+        dto,
       );
     }
 
@@ -348,12 +494,7 @@ export class EmployeesService {
                 ? dto.phone.trim()
                 : null
               : undefined,
-          specialization:
-            dto.specialization !== undefined
-              ? dto.specialization
-                ? dto.specialization.trim()
-                : null
-              : undefined,
+          ...specialtyPatch,
         },
         include: {
           user: {
@@ -378,21 +519,66 @@ export class EmployeesService {
   }
 
   async update(id: string, dto: UpdateEmployeeDto): Promise<EmployeeDetail> {
-    const existing = await this.db.client.employeeProfile.findFirst({
-      where: {
-        OR: [{ id }, { userId: id }],
-      },
-      include: {
-        user: true,
-      },
-    });
-
-    if (!existing) {
-      throw new NotFoundException(`Employee not found with id: ${id}`);
-    }
-
     try {
       const updated = await this.db.client.$transaction(async (tx) => {
+        if (
+          dto.canTeachClasses !== undefined ||
+          dto.canCoachPt !== undefined
+        ) {
+          await lockScheduleWrites(tx);
+        }
+
+        const existing = await tx.employeeProfile.findFirst({
+          where: {
+            OR: [{ id }, { userId: id }],
+          },
+          include: {
+            user: {
+              include: {
+                roles: {
+                  include: {
+                    role: true,
+                  },
+                },
+              },
+            },
+          },
+        });
+
+        if (!existing) {
+          throw new NotFoundException(`Employee not found with id: ${id}`);
+        }
+
+        const hasTrainerRole = normalizePersistedUserRoles(
+          existing.user.roles.map((r) => r.role.code),
+        ).includes(UserRole.TRAINER);
+
+        let roleData: Prisma.EmployeeProfileUpdateInput = {};
+        if (!hasTrainerRole) {
+          this.assertNonTrainerRestrictions(dto, 'Non-trainer employees');
+          roleData = {
+            specialization:
+              dto.specialization !== undefined
+                ? dto.specialization
+                  ? dto.specialization.trim() || null
+                  : null
+                : undefined,
+            specialties: [],
+            canTeachClasses: false,
+            canCoachPt: false,
+          };
+        } else {
+          const specialtyPatch = this.resolveTrainerSpecialtyUpdate(
+            existing.specialization ?? null,
+            dto,
+          );
+          roleData = {
+            ...specialtyPatch,
+            canTeachClasses: dto.canTeachClasses,
+            canCoachPt: dto.canCoachPt,
+          };
+        }
+
         // If email changed, check conflict and update User
         if (
           dto.email &&
@@ -423,18 +609,13 @@ export class EmployeesService {
                   ? dto.phone.trim()
                   : null
                 : undefined,
-            specialization:
-              dto.specialization !== undefined
-                ? dto.specialization
-                  ? dto.specialization.trim()
-                  : null
-                : undefined,
             hiredAt:
               dto.hiredAt !== undefined
                 ? dto.hiredAt
                   ? new Date(dto.hiredAt)
                   : null
                 : undefined,
+            ...roleData,
           },
           include: {
             user: {

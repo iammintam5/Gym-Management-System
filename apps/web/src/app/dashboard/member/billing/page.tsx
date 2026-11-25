@@ -1,5 +1,7 @@
 'use client';
 
+import { TablePagination } from '@/components/shared/table-pagination';
+
 import {
   FreezeStatusBadge,
   PaymentStatusBadge,
@@ -17,6 +19,7 @@ import {
   FreezeStatus,
   PaymentStatus,
   type PaymentReceipt,
+  type PaginatedPaymentsResponse,
   type SubscriptionDetail,
   type SubscriptionFreezeDetail,
 } from '@gym/contracts';
@@ -36,8 +39,6 @@ interface MemberReceiptRow {
   paymentId: string;
   receiptNo: string;
   planName: string;
-  durationDays: number;
-  validWindow: string;
   method: 'Chuyển khoản' | 'Thẻ' | 'Tiền mặt';
   amount: string;
   date: string;
@@ -74,6 +75,64 @@ export default function MemberBillingAndFreezePage() {
   >([]);
   const [receipts, setReceipts] = useState<ReadonlyArray<MemberReceiptRow>>([]);
   const [feedbackBanner, setFeedbackBanner] = useState<string | null>(null);
+
+  const [receiptPage, setReceiptPage] = useState(1);
+  const [receiptTotal, setReceiptTotal] = useState(0);
+  const [receiptsLoading, setReceiptsLoading] = useState(true);
+  const [receiptLoadError, setReceiptLoadError] = useState('');
+  const [receiptReload, setReceiptReload] = useState(0);
+  useEffect(() => {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      setReceiptsLoading(true);
+      setReceiptLoadError('');
+      void apiClient<PaginatedPaymentsResponse>(
+        '/payments/me?limit=10&page=' + receiptPage,
+        { signal: controller.signal, skipCache: true },
+      )
+        .then((result) => {
+          if (controller.signal.aborted) return;
+          setReceiptTotal(result.meta.total);
+          setReceipts(
+            result.data.map((payment) => ({
+              paymentId: payment.id,
+              receiptNo: formatReceiptNumber(
+                payment.id,
+                payment.confirmedAt ?? payment.createdAt,
+              ),
+              planName:
+                payment.ptPurchase?.packageName ??
+                payment.subscription?.planName ??
+                'Gói tập',
+              method: mapMethodLabel(payment.method),
+              amount: formatVnd(payment.amount),
+              date: formatShortDate(payment.confirmedAt ?? payment.createdAt),
+              status:
+                payment.status === PaymentStatus.PAID
+                  ? 'Paid'
+                  : payment.status === PaymentStatus.REFUNDED
+                    ? 'Refunded'
+                    : 'Pending',
+            })),
+          );
+        })
+        .catch((cause: unknown) => {
+          if (!controller.signal.aborted)
+            setReceiptLoadError(
+              cause instanceof Error
+                ? cause.message
+                : 'Không thể tải biên lai.',
+            );
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) setReceiptsLoading(false);
+        });
+    }, 0);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [receiptPage, receiptReload]);
 
   // Request Freeze Modal
   const [isFreezeModalOpen, setIsFreezeModalOpen] = useState(false);
@@ -114,7 +173,6 @@ export default function MemberBillingAndFreezePage() {
       setCurrentSubId(null);
       setCurrentPlanName('Chưa có gói tập');
       setFreezeHistory([]);
-      setReceipts([]);
       setFreezesUsedCount(0);
       if (currentSub) {
         setCurrentSubId(currentSub.id);
@@ -170,35 +228,6 @@ export default function MemberBillingAndFreezePage() {
 
         setFreezesUsedCount(Math.min(2, currentUsed));
         setFreezeHistory(mappedFreezes);
-
-        // Extract payment receipts across member subscriptions
-        const mappedReceipts: MemberReceiptRow[] = [];
-        allSubs.forEach((sub) => {
-          const payments = sub.payments || [];
-          payments.forEach((pay) => {
-            mappedReceipts.push({
-              paymentId: pay.id,
-              receiptNo: formatReceiptNumber(
-                pay.id,
-                pay.confirmedAt || sub.createdAt,
-              ),
-              planName: `${sub.plan.name} (${formatDurationVi(sub.plan.durationDays)})`,
-              durationDays: sub.plan.durationDays,
-              validWindow: `${formatShortDate(sub.startDate)} – ${formatShortDate(sub.endDate)}`,
-              method: mapMethodLabel(pay.method),
-              amount: formatVnd(Number(pay.amount)),
-              date: formatShortDate(pay.confirmedAt || sub.createdAt),
-              status:
-                pay.status === PaymentStatus.PAID
-                  ? 'Paid'
-                  : pay.status === PaymentStatus.REFUNDED
-                    ? 'Refunded'
-                    : 'Pending',
-            });
-          });
-        });
-
-        setReceipts(mappedReceipts);
       }
     } catch {
       setLoadError('Không thể tải đầy đủ dữ liệu. Vui lòng thử lại.');
@@ -405,13 +434,15 @@ export default function MemberBillingAndFreezePage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-white/[0.05] text-[13px]">
-              {receipts.length === 0 ? (
+              {receiptsLoading || receiptLoadError || receipts.length === 0 ? (
                 <tr>
                   <td
                     colSpan={7}
                     className="py-8 text-center text-[13px] text-zinc-500"
                   >
-                    Chưa có biên lai thanh toán nào.
+                    {receiptsLoading
+                      ? 'Đang tải biên lai…'
+                      : receiptLoadError || 'Chưa có biên lai thanh toán nào.'}
                   </td>
                 </tr>
               ) : (
@@ -449,6 +480,7 @@ export default function MemberBillingAndFreezePage() {
                     <td className="py-3.5 text-right">
                       <button
                         type="button"
+                        disabled={rec.status !== 'Paid'}
                         onClick={() => void handleViewReceipt(rec)}
                         className="inline-flex h-7 items-center gap-1 rounded-lg border border-white/[0.08] bg-[#18181C] px-2.5 text-[13px] text-zinc-300 hover:border-white/20 hover:text-white"
                       >
@@ -463,6 +495,26 @@ export default function MemberBillingAndFreezePage() {
           </table>
         </div>
       </div>
+
+      {receiptLoadError && (
+        <p role="alert" className="text-sm text-amber-300">
+          {receiptLoadError}{' '}
+          <button
+            type="button"
+            className="underline"
+            onClick={() => setReceiptReload((value) => value + 1)}
+          >
+            Thử lại
+          </button>
+        </p>
+      )}
+      <TablePagination
+        currentPage={receiptPage}
+        pageSize={10}
+        totalItems={receiptTotal}
+        onPageChange={setReceiptPage}
+        itemLabel="biên lai"
+      />
 
       {/* Modal 1: Request Plan Freeze (7–60 Days) */}
       {isFreezeModalOpen && (
@@ -603,14 +655,23 @@ export default function MemberBillingAndFreezePage() {
               <div className="flex justify-between">
                 <span className="text-zinc-400">Gói tập đăng ký</span>
                 <span className="font-semibold text-zinc-200">
-                  {selectedReceipt.subscription.planName}
+                  {selectedReceipt.ptPurchase?.packageName ??
+                    selectedReceipt.subscription.planName}
                 </span>
               </div>
               <div className="flex justify-between">
-                <span className="text-zinc-400">Thời hạn hiệu lực</span>
+                <span className="text-zinc-400">
+                  {selectedReceipt.ptPurchase ? 'Buổi PT' : 'Thời hạn hiệu lực'}
+                </span>
                 <span className="tabular-nums text-zinc-300">
-                  {formatShortDate(selectedReceipt.subscription.startDate)} –{' '}
-                  {formatShortDate(selectedReceipt.subscription.endDate)}
+                  {selectedReceipt.ptPurchase
+                    ? selectedReceipt.ptPurchase.sessionCount +
+                      ' buổi · ' +
+                      selectedReceipt.ptPurchase.sessionMinutes +
+                      ' phút/buổi'
+                    : formatShortDate(selectedReceipt.subscription.startDate) +
+                      ' – ' +
+                      formatShortDate(selectedReceipt.subscription.endDate)}
                 </span>
               </div>
               <div className="flex justify-between">

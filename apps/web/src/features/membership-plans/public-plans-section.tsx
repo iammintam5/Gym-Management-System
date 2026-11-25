@@ -72,9 +72,6 @@ export function PublicPlansSection() {
                   </span>
                 ) : null}
               </div>
-              <p className="mt-1.5 text-xs leading-relaxed text-zinc-400">
-                {plan.description}
-              </p>
 
               <div className="my-6 border-b border-zinc-800/90 pb-5">
                 <div className="flex items-baseline gap-1.5">
@@ -91,16 +88,18 @@ export function PublicPlansSection() {
               </div>
 
               <ul className="space-y-3 text-xs text-zinc-300">
-                {plan.entitlements.map((ent) => (
-                  <li key={`${plan.id}-${ent.service}`}>
-                    {ent.serviceName || ent.service}
-                    {ent.limitType === 'COUNT' && ent.limitValue
-                      ? ` (${ent.limitValue} buổi)`
-                      : ent.limitType === 'UNLIMITED'
-                        ? ' (Không giới hạn)'
-                        : ''}
-                  </li>
-                ))}
+                {plan.entitlements
+                  .filter((ent) => ent.service !== 'PT')
+                  .map((ent) => (
+                    <li key={`${plan.id}-${ent.service}`}>
+                      {ent.serviceName || ent.service}
+                      {ent.limitType === 'COUNT' && ent.limitValue
+                        ? ` (${ent.limitValue} buổi)`
+                        : ent.limitType === 'UNLIMITED'
+                          ? ' (Không giới hạn)'
+                          : ''}
+                    </li>
+                  ))}
                 <li>Lịch tập linh hoạt mỗi ngày</li>
                 <li>Hỗ trợ bảo lưu gói tập khi bận</li>
               </ul>

@@ -311,7 +311,7 @@ test('Payments & Billing Management Integration Tests', async (t) => {
         PaymentsService,
       } = require('../dist/modules/payments/payments.service');
       const service = app.get(PaymentsService);
-      for (const roles of [['PT'], ['MEMBER']]) {
+      for (const roles of [['TRAINER'], ['MEMBER']]) {
         await assert.rejects(
           service.getReceipt(initialPaymentId, {
             id: require('node:crypto').randomUUID(),
@@ -394,7 +394,9 @@ test('Payments & Billing Management Integration Tests', async (t) => {
       assert.equal(confirmSecond.status, 200);
 
       // 2. Query reconciliation for today
-      const todayStr = new Date().toISOString().slice(0, 10);
+      const todayStr = new Date(Date.now() + 7 * 3600000)
+        .toISOString()
+        .slice(0, 10);
       const res = await request(`payments/reconciliation?date=${todayStr}`, {
         method: 'GET',
         token: staffToken,

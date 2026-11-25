@@ -11,7 +11,7 @@
     "dev": "turbo run dev",
     "build": "turbo run build",
     "lint": "turbo run lint",
-    "test": "turbo run test",
+    "test": "pnpm test:demo && turbo run test",
     "typecheck": "turbo run typecheck",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
@@ -23,7 +23,10 @@
     "db:migrate": "pnpm --filter @gym/database db:migrate",
     "db:deploy": "pnpm --filter @gym/database db:deploy",
     "db:seed": "pnpm --filter @gym/database db:seed",
-    "db:studio": "pnpm --filter @gym/database db:studio"
+    "db:studio": "pnpm --filter @gym/database db:studio",
+    "demo": "node scripts/run-demo.mjs --build",
+    "demo:start": "node scripts/run-demo.mjs",
+    "test:demo": "node --test scripts/test/*.test.mjs"
   },
   "devDependencies": {
     "turbo": "^2.8.0",

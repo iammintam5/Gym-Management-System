@@ -148,6 +148,16 @@ export class PaymentsController {
     return this.paymentsService.findAll(query);
   }
 
+  @Get('payments/me')
+  @Roles(UserRole.MEMBER)
+  @ApiOperation({ summary: 'Member lists own Gym and PT payments' })
+  async getMyPayments(
+    @CurrentUser() user: AuthUser,
+    @Query() query: QueryPaymentsDto,
+  ): Promise<PaginatedPaymentsResponse> {
+    return this.paymentsService.findSelf(user.id, query);
+  }
+
   @Get('payments/:id')
   @Roles(UserRole.STAFF, UserRole.ADMIN)
   @ApiOperation({

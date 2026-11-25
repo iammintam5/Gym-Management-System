@@ -82,7 +82,7 @@ export class ClassSchedulesController {
   }
 
   @Get(':id/bookings')
-  @Roles(UserRole.ADMIN, UserRole.STAFF, UserRole.PT)
+  @Roles(UserRole.ADMIN, UserRole.STAFF, UserRole.TRAINER)
   @ApiBearerAuth()
   @ApiOperation({
     summary: 'Get attendee roster for a class schedule session',

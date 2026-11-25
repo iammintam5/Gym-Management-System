@@ -4,16 +4,19 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
 import { Prisma } from '@gym/database';
 import {
   lockScheduleWrites,
-  assertBookingAccess,
   assertAttendanceTime,
 } from '../common/booking-access';
 import { DatabaseService } from '../database/database.module';
+import { PtCreditService } from '../pt-packages/pt-credit.service';
 import { CreatePtBookingDto } from './dto/create-pt-booking.dto';
 import { MarkPtAttendanceDto } from './dto/mark-pt-attendance.dto';
+import { PtBookingActionDto } from './dto/pt-booking-action.dto';
 import { QueryPtBookingsDto } from './dto/query-pt-bookings.dto';
 import {
   AttendanceStatus,
@@ -21,10 +24,7 @@ import {
   BookingStatus,
   PaginatedPtBookingsResponse,
   PtBookingDetail,
-  QuotaTransactionType,
   ScheduleStatus,
-  ServiceTypeCode,
-  SubscriptionStatus,
   UserRole,
 } from '@gym/contracts';
 
@@ -33,7 +33,9 @@ interface RawPtBookingWithRelations {
   memberId: string;
   trainerId: string;
   subscriptionId: string;
-  quotaId: string;
+  sourceSubscriptionId?: string | null;
+  quotaId: string | null;
+  ptPurchaseId?: string | null;
   availabilityId: string | null;
   startsAt: Date;
   endsAt: Date;
@@ -56,26 +58,37 @@ interface RawPtBookingWithRelations {
 
 @Injectable()
 export class PtBookingsService {
-  constructor(private readonly db: DatabaseService) {}
+  private readonly ptCredits: PtCreditService;
+
+  constructor(
+    private readonly db: DatabaseService,
+    @Optional() ptCreditService?: PtCreditService,
+  ) {
+    this.ptCredits = ptCreditService ?? new PtCreditService(this.db);
+  }
 
   async createBooking(
     dto: CreatePtBookingDto,
     user: AuthUser,
   ): Promise<PtBookingDetail> {
-    // 1. Resolve Target Member ID
+    // 1. Resolve Target Member ID & enforce strict ownership for MEMBER role
     let targetMemberId: string;
+    const isStaffOrAdmin = user.roles.some(
+      (r) => r === UserRole.STAFF || r === UserRole.ADMIN,
+    );
 
-    if (
-      user.roles.includes(UserRole.MEMBER) &&
-      (!dto.memberId ||
-        !user.roles.some((r) => r === UserRole.STAFF || r === UserRole.ADMIN))
-    ) {
+    if (user.roles.includes(UserRole.MEMBER) && !isStaffOrAdmin) {
       const memberProfile = await this.db.client.memberProfile.findFirst({
         where: { userId: user.id },
       });
       if (!memberProfile) {
         throw new NotFoundException(
           'Không tìm thấy thông tin hội viên của bạn',
+        );
+      }
+      if (dto.memberId && dto.memberId !== memberProfile.id) {
+        throw new ForbiddenException(
+          'Hội viên không được phép đặt lịch tập PT thay cho hội viên khác',
         );
       }
       targetMemberId = memberProfile.id;
@@ -97,40 +110,7 @@ export class PtBookingsService {
       targetMemberId = memberProfile.id;
     }
 
-    // 2. Validate Trainer
-    const trainer = await this.db.client.employeeProfile.findUnique({
-      where: { id: dto.trainerId },
-      include: {
-        user: {
-          include: {
-            roles: { include: { role: true } },
-          },
-        },
-      },
-    });
-
-    if (!trainer) {
-      throw new NotFoundException(
-        `Huấn luyện viên với ID "${dto.trainerId}" không tồn tại`,
-      );
-    }
-
-    if (!trainer.user.isActive) {
-      throw new BadRequestException(
-        'Tài khoản Huấn luyện viên này đã bị vô hiệu hoá',
-      );
-    }
-
-    const hasPtRole = trainer.user.roles.some(
-      (r: { role: { code: string } }) => r.role.code === UserRole.PT,
-    );
-    if (!hasPtRole) {
-      throw new BadRequestException(
-        `Nhân viên "${trainer.fullName}" không có chuyên môn/vai trò Huấn luyện viên (PT role required)`,
-      );
-    }
-
-    // 3. Validate Timing
+    // 2. Validate Timing
     const start = new Date(dto.startsAt);
     const end = new Date(dto.endsAt);
 
@@ -151,206 +131,238 @@ export class PtBookingsService {
       );
     }
 
-    // 4. Validate Trainer Schedule Conflicts
-    // a. ClassSchedule conflict
-    // 8. Atomic Transaction
-    const booking = await this.db.client.$transaction(
-      async (tx: Prisma.TransactionClient) => {
-        await lockScheduleWrites(tx);
-        await tx.$queryRaw`SELECT id FROM member_profiles WHERE id = ${targetMemberId}::uuid FOR UPDATE`;
-        const classConflict = await tx.classSchedule.findFirst({
-          where: {
-            trainerId: dto.trainerId,
+    const callerIdempotencyKey = dto.idempotencyKey?.trim() || undefined;
+    const requestPayload = {
+      memberId: targetMemberId,
+      trainerId: dto.trainerId,
+      startsAt: start.toISOString(),
+      endsAt: end.toISOString(),
+      availabilityId: dto.availabilityId ?? null,
+      actorId: user.id,
+    };
+
+    // 3. Atomic Transaction (locks schedule writes + member PT domain before validating capability, conflicts & credits)
+    return this.db.client.$transaction(async (tx: Prisma.TransactionClient) => {
+      await lockScheduleWrites(tx);
+
+      if (callerIdempotencyKey) {
+        const replay =
+          await this.ptCredits.findIdempotentReplay<PtBookingDetail>(
+            tx,
+            callerIdempotencyKey,
+            'CREATE_PT_BOOKING',
+            requestPayload,
+          );
+        if (replay) {
+          return replay.snapshot;
+        }
+      }
+
+      await this.ptCredits.lockMemberPtDomain(tx, targetMemberId);
+
+      // 7. Evaluate Gym Coverage & Select Canonical PT Credit Source
+      const now = new Date();
+      const { coveringSubscriptionId, selectedSource } =
+        await this.ptCredits.evaluateAndSelectBookingSourceInTx(tx, {
+          memberId: targetMemberId,
+          startsAt: start,
+          endsAt: end,
+          now,
+        });
+
+      const covering = await tx.subscription.findUniqueOrThrow({
+        where: { id: coveringSubscriptionId },
+      });
+      const trainerId = covering.assignedTrainerId;
+      if (!trainerId)
+        throw new ConflictException(
+          'Gói Gym chưa được phân PT phụ trách. Vui lòng liên hệ lễ tân.',
+        );
+      if (dto.trainerId && dto.trainerId !== trainerId)
+        throw new ForbiddenException(
+          'Chỉ được đặt lịch với PT đã phân cho kỳ gói Gym này.',
+        );
+
+      const trainer = await tx.employeeProfile.findUnique({
+        where: { id: trainerId },
+        include: {
+          user: {
+            include: {
+              roles: { include: { role: true } },
+            },
+          },
+        },
+      });
+
+      if (!trainer) {
+        throw new NotFoundException(
+          `Huấn luyện viên với ID "${trainerId}" không tồn tại`,
+        );
+      }
+
+      if (!trainer.user.isActive) {
+        throw new BadRequestException(
+          'Tài khoản Huấn luyện viên này đã bị vô hiệu hoá',
+        );
+      }
+
+      const hasPtRole = trainer.user.roles.some(
+        (r: { role: { code: string } }) => r.role.code === UserRole.TRAINER,
+      );
+      if (!hasPtRole) {
+        throw new BadRequestException(
+          `Nhân viên "${trainer.fullName}" không có chuyên môn/vai trò Huấn luyện viên (TRAINER role required)`,
+        );
+      }
+
+      if (!trainer.canCoachPt) {
+        throw new BadRequestException(
+          `Huấn luyện viên "${trainer.fullName}" hiện không nhận lịch tập PT 1-1 mới`,
+        );
+      }
+
+      // 4. Validate Trainer Conflicts
+      const classConflict = await tx.classSchedule.findFirst({
+        where: {
+          trainerId: trainerId,
+          status: ScheduleStatus.SCHEDULED,
+          startsAt: { lt: end },
+          endsAt: { gt: start },
+        },
+        include: { gymClass: true },
+      });
+      if (classConflict) {
+        throw new ConflictException(
+          `Huấn luyện viên đã có lịch dạy lớp "${classConflict.gymClass.name}" vào khung giờ này`,
+        );
+      }
+
+      const ptConflict = await tx.ptBooking.findFirst({
+        where: {
+          trainerId: trainerId,
+          status: BookingStatus.BOOKED,
+          startsAt: { lt: end },
+          endsAt: { gt: start },
+        },
+      });
+      if (ptConflict) {
+        throw new ConflictException(
+          'Huấn luyện viên đã có lịch tập 1-1 khác vào khung giờ này (Trainer conflict with existing PT booking)',
+        );
+      }
+
+      // 5. Validate Member Conflicts
+      const memberPtConflict = await tx.ptBooking.findFirst({
+        where: {
+          memberId: targetMemberId,
+          status: BookingStatus.BOOKED,
+          startsAt: { lt: end },
+          endsAt: { gt: start },
+        },
+      });
+      if (memberPtConflict) {
+        throw new ConflictException(
+          'Hội viên đã có lịch tập PT 1-1 khác vào khung giờ này (Member PT booking conflict)',
+        );
+      }
+
+      const memberClassConflict = await tx.classBooking.findFirst({
+        where: {
+          memberId: targetMemberId,
+          status: BookingStatus.BOOKED,
+          schedule: {
             status: ScheduleStatus.SCHEDULED,
             startsAt: { lt: end },
             endsAt: { gt: start },
           },
-          include: { gymClass: true },
-        });
-        if (classConflict) {
-          throw new ConflictException(
-            `Huấn luyện viên đã có lịch dạy lớp "${classConflict.gymClass.name}" vào khung giờ này`,
-          );
-        }
-
-        // b. PT Booking conflict
-        const ptConflict = await tx.ptBooking.findFirst({
-          where: {
-            trainerId: dto.trainerId,
-            status: BookingStatus.BOOKED,
-            startsAt: { lt: end },
-            endsAt: { gt: start },
-          },
-        });
-        if (ptConflict) {
-          throw new ConflictException(
-            'Huấn luyện viên đã có lịch tập 1-1 khác vào khung giờ này (Trainer conflict with existing PT booking)',
-          );
-        }
-
-        // 5. Validate Member Conflicts
-        // a. Member overlapping PT Booking
-        const memberPtConflict = await tx.ptBooking.findFirst({
-          where: {
-            memberId: targetMemberId,
-            status: BookingStatus.BOOKED,
-            startsAt: { lt: end },
-            endsAt: { gt: start },
-          },
-        });
-        if (memberPtConflict) {
-          throw new ConflictException(
-            'Hội viên đã có lịch tập PT 1-1 khác vào khung giờ này (Member PT booking conflict)',
-          );
-        }
-
-        // b. Member overlapping Class Booking
-        const memberClassConflict = await tx.classBooking.findFirst({
-          where: {
-            memberId: targetMemberId,
-            status: BookingStatus.BOOKED,
-            schedule: {
-              status: ScheduleStatus.SCHEDULED,
-              startsAt: { lt: end },
-              endsAt: { gt: start },
-            },
-          },
-          include: { schedule: { include: { gymClass: true } } },
-        });
-        if (memberClassConflict) {
-          throw new ConflictException(
-            `Hội viên đã có lịch tham gia lớp "${memberClassConflict.schedule.gymClass.name}" vào khung giờ này`,
-          );
-        }
-
-        // 6. Validate Availability Slot (if specified)
-        if (dto.availabilityId) {
-          const avail = await tx.ptAvailability.findFirst({
-            where: {
-              id: dto.availabilityId,
-              trainerId: dto.trainerId,
-              isAvailable: true,
-              startsAt: { lte: start },
-              endsAt: { gte: end },
-            },
-          });
-          if (!avail) {
-            throw new BadRequestException(
-              'Khung giờ rảnh không tồn tại hoặc không bao trùm thời gian buổi tập',
-            );
-          }
-        }
-
-        // 7. Check Active Subscription & PT Quota
-        const activeSub = await tx.subscription.findFirst({
-          where: {
-            memberId: targetMemberId,
-            status: SubscriptionStatus.ACTIVE,
-            startDate: { lte: start },
-            endDate: { gte: start },
-          },
-          include: {
-            quotas: {
-              include: { serviceType: true },
-            },
-          },
-          orderBy: { endDate: 'desc' },
-        });
-
-        if (!activeSub) {
-          throw new BadRequestException(
-            'Hội viên không có gói tập đang hoạt động bao trùm ngày diễn ra buổi tập (No active subscription covering date)',
-          );
-        }
-
-        const ptQuota = activeSub.quotas.find(
-          (q: { serviceType: { code: string } }) =>
-            q.serviceType.code === ServiceTypeCode.PT,
+        },
+        include: { schedule: { include: { gymClass: true } } },
+      });
+      if (memberClassConflict) {
+        throw new ConflictException(
+          `Hội viên đã có lịch tham gia lớp "${memberClassConflict.schedule.gymClass.name}" vào khung giờ này`,
         );
+      }
 
-        if (!ptQuota) {
-          throw new BadRequestException(
-            'Gói tập của hội viên không bao gồm quyền lợi tập cùng Huấn luyện viên (PT entitlement required)',
-          );
-        }
-
-        if (ptQuota.allocated !== null) {
-          const remaining = ptQuota.allocated - ptQuota.reserved - ptQuota.used;
-          if (remaining <= 0) {
-            throw new ConflictException(
-              'Gói tập đã hết số lượt tập cùng Huấn luyện viên (PT quota exhausted)',
-            );
-          }
-        }
-
-        await assertBookingAccess(tx, activeSub.id, start, end);
-        // Reserve PT quota
-        if (ptQuota.allocated !== null) {
-          const reserved =
-            await tx.$executeRaw`UPDATE subscription_quotas SET reserved = reserved + 1, updated_at = CURRENT_TIMESTAMP WHERE id = ${ptQuota.id}::uuid AND used + reserved < allocated`;
-          if (reserved !== 1)
-            throw new ConflictException('Gói tập đã hết lượt khả dụng.');
-
-          await tx.quotaTransaction.create({
-            data: {
-              quotaId: ptQuota.id,
-              subscriptionId: activeSub.id,
-              type: QuotaTransactionType.RESERVE,
-              reservedDelta: 1,
-              idempotencyKey: `pt-book-${targetMemberId}-${dto.trainerId}-${start.getTime()}-${Date.now()}`,
-              referenceType: 'PT_BOOKING',
-              referenceId: dto.trainerId,
-              reason: `Đặt lịch tập PT 1-1 với HLV ${trainer.fullName}`,
-              createdBy: user.id,
-            },
-          });
-        } else {
-          await tx.quotaTransaction.create({
-            data: {
-              quotaId: ptQuota.id,
-              subscriptionId: activeSub.id,
-              type: QuotaTransactionType.RESERVE,
-              reservedDelta: 0,
-              idempotencyKey: `pt-book-${targetMemberId}-${dto.trainerId}-${start.getTime()}-${Date.now()}`,
-              referenceType: 'PT_BOOKING',
-              referenceId: dto.trainerId,
-              reason: `Đặt lịch tập PT 1-1 (Gói không giới hạn) với HLV ${trainer.fullName}`,
-              createdBy: user.id,
-            },
-          });
-        }
-
-        // Create PtBooking
-        const created = await tx.ptBooking.create({
-          data: {
-            memberId: targetMemberId,
-            trainerId: dto.trainerId,
-            subscriptionId: activeSub.id,
-            quotaId: ptQuota.id,
-            availabilityId: dto.availabilityId ?? null,
-            startsAt: start,
-            endsAt: end,
-            status: BookingStatus.BOOKED,
-            attendance: AttendanceStatus.PENDING,
-          },
-          include: {
-            member: true,
-            trainer: true,
+      // 6. Validate Availability Slot (if specified)
+      if (dto.availabilityId) {
+        const avail = await tx.ptAvailability.findFirst({
+          where: {
+            id: dto.availabilityId,
+            trainerId: trainerId,
+            isAvailable: true,
+            startsAt: { lte: start },
+            endsAt: { gte: end },
           },
         });
+        if (!avail) {
+          throw new BadRequestException(
+            'Khung giờ rảnh không tồn tại hoặc không bao trùm thời gian buổi tập',
+          );
+        }
+      }
 
-        return created;
-      },
-    );
+      const bookingId = randomUUID();
+      const ledgerIdempotencyKey =
+        callerIdempotencyKey ?? `pt-booking:reserve:${bookingId}`;
 
-    return this.mapBookingDetail(
-      booking as unknown as RawPtBookingWithRelations,
-    );
+      // 8. Persist PtBooking with immutable source links distinct from covering Gym subscription
+      const created = await tx.ptBooking.create({
+        data: {
+          id: bookingId,
+          memberId: targetMemberId,
+          trainerId: trainerId,
+          subscriptionId: coveringSubscriptionId,
+          sourceSubscriptionId: selectedSource.sourceSubscriptionId,
+          quotaId: selectedSource.quotaId,
+          ptPurchaseId: selectedSource.ptPurchaseId,
+          availabilityId: dto.availabilityId ?? null,
+          startsAt: start,
+          endsAt: end,
+          status: BookingStatus.BOOKED,
+          attendance: AttendanceStatus.PENDING,
+        },
+        include: {
+          member: true,
+          trainer: true,
+        },
+      });
+
+      // 9. Reserve PT credit in shared service referencing actual bookingId
+      const reason = selectedSource.unlimited
+        ? `Đặt lịch tập PT 1-1 (Gói không giới hạn) với HLV ${trainer.fullName}`
+        : `Đặt lịch tập PT 1-1 với HLV ${trainer.fullName}`;
+
+      const { quotaTransactionId } =
+        await this.ptCredits.reserveBookingCreditInTx(tx, {
+          bookingId,
+          selectedSource,
+          idempotencyKey: ledgerIdempotencyKey,
+          actorId: user.id,
+          reason,
+        });
+
+      const detail = this.mapBookingDetail(
+        created as unknown as RawPtBookingWithRelations,
+      );
+
+      await this.ptCredits.saveIdempotentMutationAudit(tx, {
+        quotaTransactionId,
+        idempotencyKey: ledgerIdempotencyKey,
+        operation: 'CREATE_PT_BOOKING',
+        actorId: user.id,
+        payload: requestPayload,
+        resultSnapshot: detail,
+      });
+
+      return detail;
+    });
   }
 
   async cancelBooking(
     bookingId: string,
     user: AuthUser,
+    dto?: PtBookingActionDto,
   ): Promise<PtBookingDetail> {
     const booking = await this.db.client.ptBooking.findUnique({
       where: { id: bookingId },
@@ -366,104 +378,126 @@ export class PtBookingsService {
       );
     }
 
-    if (booking.status === BookingStatus.CANCELLED) {
-      throw new ConflictException('Lịch tập này đã được huỷ trước đó');
-    }
-
-    if (
-      booking.status === BookingStatus.COMPLETED ||
-      booking.attendance === AttendanceStatus.PRESENT
-    ) {
-      throw new ConflictException('Không thể huỷ buổi tập đã hoàn thành');
-    }
-
-    const now = new Date();
     const isStaffOrAdmin =
       user.roles.includes(UserRole.STAFF) ||
       user.roles.includes(UserRole.ADMIN);
     const isTrainer = booking.trainer.userId === user.id;
 
-    if (!isStaffOrAdmin && !isTrainer) {
-      if (booking.member.userId !== user.id) {
-        throw new ForbiddenException(
-          'Hội viên không có quyền huỷ lịch tập của người khác',
-        );
-      }
-
-      // 6-hour policy for member self-cancellation
-      const cutoff = new Date(booking.startsAt.getTime() - 6 * 60 * 60 * 1000);
-      if (now.getTime() > cutoff.getTime()) {
-        throw new BadRequestException(
-          'Quy định huỷ lịch: Hội viên chỉ được huỷ trước giờ tập ít nhất 6 tiếng (Cancellation allowed up to 6 hours before session start)',
-        );
-      }
+    if (!isStaffOrAdmin && !isTrainer && booking.member.userId !== user.id) {
+      throw new ForbiddenException(
+        'Hội viên không có quyền huỷ lịch tập của người khác',
+      );
     }
 
-    const cancelled = await this.db.client.$transaction(
-      async (tx: Prisma.TransactionClient) => {
-        await lockScheduleWrites(tx);
-        await tx.$queryRaw`SELECT id FROM member_profiles WHERE id = ${booking.memberId}::uuid FOR UPDATE`;
-        await tx.$queryRaw`SELECT id FROM subscriptions WHERE id = ${booking.subscriptionId}::uuid FOR UPDATE`;
-        const current = await tx.ptBooking.findUniqueOrThrow({
-          where: { id: bookingId },
-        });
-        if (
-          current.status !== BookingStatus.BOOKED ||
-          current.attendance !== AttendanceStatus.PENDING
-        )
-          throw new ConflictException(
-            'Đặt lịch đã được xử lý. Vui lòng tải lại.',
+    const callerIdempotencyKey = dto?.idempotencyKey?.trim() || undefined;
+    const requestPayload = {
+      bookingId,
+      actorId: user.id,
+    };
+
+    return this.db.client.$transaction(async (tx: Prisma.TransactionClient) => {
+      await lockScheduleWrites(tx);
+
+      if (callerIdempotencyKey) {
+        const replay =
+          await this.ptCredits.findIdempotentReplay<PtBookingDetail>(
+            tx,
+            callerIdempotencyKey,
+            'CANCEL_PT_BOOKING',
+            requestPayload,
           );
-
-        const updated = await tx.ptBooking.update({
-          where: { id: bookingId },
-          data: {
-            status: BookingStatus.CANCELLED,
-            cancelledAt: now,
-          },
-          include: {
-            member: true,
-            trainer: true,
-          },
-        });
-
-        const quota = await tx.subscriptionQuota.findUnique({
-          where: { id: booking.quotaId },
-        });
-
-        if (quota && quota.allocated !== null) {
-          await tx.subscriptionQuota.update({
-            where: { id: booking.quotaId },
-            data: { reserved: { decrement: 1 } },
-          });
-
-          await tx.quotaTransaction.create({
-            data: {
-              quotaId: booking.quotaId,
-              subscriptionId: booking.subscriptionId,
-              type: QuotaTransactionType.REFUND,
-              reservedDelta: -1,
-              idempotencyKey: `cancel-pt-booking-${bookingId}-${Date.now()}`,
-              referenceType: 'PT_BOOKING',
-              referenceId: bookingId,
-              reason: 'Huỷ lịch tập PT 1-1, hoàn lại quota giữ chỗ',
-              createdBy: user.id,
-            },
-          });
+        if (replay) {
+          return replay.snapshot;
         }
+      }
 
-        return updated;
-      },
-    );
+      await this.ptCredits.lockMemberPtDomain(tx, booking.memberId);
 
-    return this.mapBookingDetail(
-      cancelled as unknown as RawPtBookingWithRelations,
-    );
+      const current = await tx.ptBooking.findUniqueOrThrow({
+        where: { id: bookingId },
+      });
+
+      if (current.status === BookingStatus.CANCELLED) {
+        throw new ConflictException('Lịch tập này đã được huỷ trước đó');
+      }
+
+      if (
+        current.status === BookingStatus.COMPLETED ||
+        current.attendance === AttendanceStatus.PRESENT
+      ) {
+        throw new ConflictException('Không thể huỷ buổi tập đã hoàn thành');
+      }
+
+      if (
+        current.status !== BookingStatus.BOOKED ||
+        current.attendance !== AttendanceStatus.PENDING
+      ) {
+        throw new ConflictException(
+          'Đặt lịch đã được xử lý. Vui lòng tải lại.',
+        );
+      }
+
+      const now = new Date();
+      if (!isStaffOrAdmin && !isTrainer) {
+        // 6-hour policy for member self-cancellation
+        const cutoff = new Date(
+          current.startsAt.getTime() - 6 * 60 * 60 * 1000,
+        );
+        if (now.getTime() > cutoff.getTime()) {
+          throw new BadRequestException(
+            'Quy định huỷ lịch: Hội viên chỉ được huỷ trước giờ tập ít nhất 6 tiếng (Cancellation allowed up to 6 hours before session start)',
+          );
+        }
+      }
+
+      const updated = await tx.ptBooking.update({
+        where: { id: bookingId },
+        data: {
+          status: BookingStatus.CANCELLED,
+          cancelledAt: now,
+        },
+        include: {
+          member: true,
+          trainer: true,
+        },
+      });
+
+      const ledgerIdempotencyKey =
+        callerIdempotencyKey ?? `pt-booking:cancel:${bookingId}`;
+
+      const { quotaTransactionId } =
+        await this.ptCredits.settleBookingCreditInTx(tx, {
+          booking: current,
+          settlement: 'REFUND',
+          idempotencyKey: ledgerIdempotencyKey,
+          actorId: user.id,
+          reason: 'Huỷ lịch tập PT 1-1, hoàn lại quota giữ chỗ',
+        });
+
+      const detail = this.mapBookingDetail(
+        updated as unknown as RawPtBookingWithRelations,
+      );
+
+      await this.ptCredits.saveIdempotentMutationAudit(tx, {
+        quotaTransactionId,
+        idempotencyKey: ledgerIdempotencyKey,
+        operation: 'CANCEL_PT_BOOKING',
+        actorId: user.id,
+        payload: requestPayload,
+        resultSnapshot: detail,
+      });
+
+      return detail;
+    });
   }
 
   async completeBooking(
     bookingId: string,
     user: AuthUser,
+    dto?: PtBookingActionDto,
+    internalOperation:
+      'COMPLETE_PT_BOOKING' | 'MARK_PT_ATTENDANCE' = 'COMPLETE_PT_BOOKING',
+    extraPayload?: Record<string, unknown>,
   ): Promise<PtBookingDetail> {
     const booking = await this.db.client.ptBooking.findUnique({
       where: { id: bookingId },
@@ -490,94 +524,105 @@ export class PtBookingsService {
       );
     }
 
-    if (booking.status === BookingStatus.CANCELLED) {
-      throw new ConflictException('Không thể hoàn thành buổi tập đã bị huỷ');
-    }
+    const callerIdempotencyKey = dto?.idempotencyKey?.trim() || undefined;
+    const requestPayload = {
+      bookingId,
+      actorId: user.id,
+      ...(extraPayload ?? {}),
+    };
 
-    if (
-      booking.status === BookingStatus.COMPLETED ||
-      booking.attendance === AttendanceStatus.PRESENT
-    ) {
-      throw new ConflictException(
-        'Buổi tập này đã được xác nhận hoàn thành trước đó',
-      );
-    }
+    return this.db.client.$transaction(async (tx: Prisma.TransactionClient) => {
+      await lockScheduleWrites(tx);
 
-    const now = new Date();
-
-    const completed = await this.db.client.$transaction(
-      async (tx: Prisma.TransactionClient) => {
-        await lockScheduleWrites(tx);
-        await tx.$queryRaw`SELECT id FROM member_profiles WHERE id = ${booking.memberId}::uuid FOR UPDATE`;
-        await tx.$queryRaw`SELECT id FROM subscriptions WHERE id = ${booking.subscriptionId}::uuid FOR UPDATE`;
-        const current = await tx.ptBooking.findUniqueOrThrow({
-          where: { id: bookingId },
-        });
-        if (
-          current.status !== BookingStatus.BOOKED ||
-          current.attendance !== AttendanceStatus.PENDING
-        )
-          throw new ConflictException(
-            'Đặt lịch đã được xử lý. Vui lòng tải lại.',
+      if (callerIdempotencyKey) {
+        const replay =
+          await this.ptCredits.findIdempotentReplay<PtBookingDetail>(
+            tx,
+            callerIdempotencyKey,
+            internalOperation,
+            requestPayload,
           );
-        assertAttendanceTime(current.startsAt, current.endsAt, false);
-        await assertBookingAccess(
-          tx,
-          current.subscriptionId,
-          current.startsAt,
-          current.endsAt,
-        );
-
-        const updated = await tx.ptBooking.update({
-          where: { id: bookingId },
-          data: {
-            status: BookingStatus.COMPLETED,
-            attendance: AttendanceStatus.PRESENT,
-            attendedAt: now,
-          },
-          include: {
-            member: true,
-            trainer: true,
-          },
-        });
-
-        const quota = await tx.subscriptionQuota.findUnique({
-          where: { id: booking.quotaId },
-        });
-
-        if (quota && quota.allocated !== null) {
-          await tx.subscriptionQuota.update({
-            where: { id: booking.quotaId },
-            data: {
-              reserved: { decrement: 1 },
-              used: { increment: 1 },
-            },
-          });
-
-          await tx.quotaTransaction.create({
-            data: {
-              quotaId: booking.quotaId,
-              subscriptionId: booking.subscriptionId,
-              type: QuotaTransactionType.USE,
-              reservedDelta: -1,
-              usedDelta: 1,
-              idempotencyKey: `complete-pt-booking-${bookingId}-${Date.now()}`,
-              referenceType: 'PT_BOOKING',
-              referenceId: bookingId,
-              reason:
-                'Hoàn thành buổi tập PT 1-1, chuyển quota reserved sang used',
-              createdBy: user.id,
-            },
-          });
+        if (replay) {
+          return replay.snapshot;
         }
+      }
 
-        return updated;
-      },
-    );
+      await this.ptCredits.lockMemberPtDomain(tx, booking.memberId);
 
-    return this.mapBookingDetail(
-      completed as unknown as RawPtBookingWithRelations,
-    );
+      const current = await tx.ptBooking.findUniqueOrThrow({
+        where: { id: bookingId },
+      });
+
+      if (current.status === BookingStatus.CANCELLED) {
+        throw new ConflictException('Không thể hoàn thành buổi tập đã bị huỷ');
+      }
+
+      if (
+        current.status === BookingStatus.COMPLETED ||
+        current.attendance === AttendanceStatus.PRESENT
+      ) {
+        throw new ConflictException(
+          'Buổi tập này đã được xác nhận hoàn thành trước đó',
+        );
+      }
+
+      if (
+        current.status !== BookingStatus.BOOKED ||
+        current.attendance !== AttendanceStatus.PENDING
+      ) {
+        throw new ConflictException(
+          'Đặt lịch đã được xử lý. Vui lòng tải lại.',
+        );
+      }
+
+      const now = new Date();
+      assertAttendanceTime(current.startsAt, current.endsAt, false);
+      await this.ptCredits.assertPtBookingAttendanceAccessInTx(
+        tx,
+        current,
+        now,
+      );
+
+      const updated = await tx.ptBooking.update({
+        where: { id: bookingId },
+        data: {
+          status: BookingStatus.COMPLETED,
+          attendance: AttendanceStatus.PRESENT,
+          attendedAt: now,
+        },
+        include: {
+          member: true,
+          trainer: true,
+        },
+      });
+
+      const ledgerIdempotencyKey =
+        callerIdempotencyKey ?? `pt-booking:complete:${bookingId}`;
+
+      const { quotaTransactionId } =
+        await this.ptCredits.settleBookingCreditInTx(tx, {
+          booking: current,
+          settlement: 'USE',
+          idempotencyKey: ledgerIdempotencyKey,
+          actorId: user.id,
+          reason: 'Hoàn thành buổi tập PT 1-1, chuyển quota reserved sang used',
+        });
+
+      const detail = this.mapBookingDetail(
+        updated as unknown as RawPtBookingWithRelations,
+      );
+
+      await this.ptCredits.saveIdempotentMutationAudit(tx, {
+        quotaTransactionId,
+        idempotencyKey: ledgerIdempotencyKey,
+        operation: internalOperation,
+        actorId: user.id,
+        payload: requestPayload,
+        resultSnapshot: detail,
+      });
+
+      return detail;
+    });
   }
 
   async markAttendance(
@@ -586,10 +631,16 @@ export class PtBookingsService {
     user: AuthUser,
   ): Promise<PtBookingDetail> {
     if (dto.attendance === AttendanceStatus.PRESENT) {
-      return this.completeBooking(bookingId, user);
+      return this.completeBooking(
+        bookingId,
+        user,
+        { idempotencyKey: dto.idempotencyKey },
+        'MARK_PT_ATTENDANCE',
+        { attendance: AttendanceStatus.PRESENT },
+      );
     }
 
-    // Attendance is ABSENT
+    // Attendance is ABSENT / NO_SHOW
     const booking = await this.db.client.ptBooking.findUnique({
       where: { id: bookingId },
       include: {
@@ -615,90 +666,104 @@ export class PtBookingsService {
       );
     }
 
-    if (booking.status === BookingStatus.CANCELLED) {
-      throw new ConflictException('Không thể điểm danh buổi tập đã bị huỷ');
-    }
+    const normalizedOutcome =
+      dto.attendance === AttendanceStatus.NO_SHOW
+        ? AttendanceStatus.NO_SHOW
+        : AttendanceStatus.ABSENT;
+    const callerIdempotencyKey = dto.idempotencyKey?.trim() || undefined;
+    const requestPayload = {
+      bookingId,
+      actorId: user.id,
+      attendance: normalizedOutcome,
+    };
 
-    if (booking.attendance !== AttendanceStatus.PENDING) {
-      throw new ConflictException(
-        `Buổi tập này đã được điểm danh trước đó (${booking.attendance})`,
-      );
-    }
+    return this.db.client.$transaction(async (tx: Prisma.TransactionClient) => {
+      await lockScheduleWrites(tx);
 
-    const marked = await this.db.client.$transaction(
-      async (tx: Prisma.TransactionClient) => {
-        await lockScheduleWrites(tx);
-        await tx.$queryRaw`SELECT id FROM member_profiles WHERE id = ${booking.memberId}::uuid FOR UPDATE`;
-        await tx.$queryRaw`SELECT id FROM subscriptions WHERE id = ${booking.subscriptionId}::uuid FOR UPDATE`;
-        const current = await tx.ptBooking.findUniqueOrThrow({
-          where: { id: bookingId },
-        });
-        if (
-          current.status !== BookingStatus.BOOKED ||
-          current.attendance !== AttendanceStatus.PENDING
-        )
-          throw new ConflictException(
-            'Đặt lịch đã được xử lý. Vui lòng tải lại.',
+      if (callerIdempotencyKey) {
+        const replay =
+          await this.ptCredits.findIdempotentReplay<PtBookingDetail>(
+            tx,
+            callerIdempotencyKey,
+            'MARK_PT_ATTENDANCE',
+            requestPayload,
           );
-        assertAttendanceTime(current.startsAt, current.endsAt, true);
-        await assertBookingAccess(
-          tx,
-          current.subscriptionId,
-          current.startsAt,
-          current.endsAt,
-        );
-
-        const updated = await tx.ptBooking.update({
-          where: { id: bookingId },
-          data: {
-            status: BookingStatus.NO_SHOW,
-            attendance: AttendanceStatus.ABSENT,
-            attendedAt: null,
-          },
-          include: {
-            member: true,
-            trainer: true,
-          },
-        });
-
-        const quota = await tx.subscriptionQuota.findUnique({
-          where: { id: booking.quotaId },
-        });
-
-        if (quota && quota.allocated !== null) {
-          // Penalty: forfeit reserved slot as used
-          await tx.subscriptionQuota.update({
-            where: { id: booking.quotaId },
-            data: {
-              reserved: { decrement: 1 },
-              used: { increment: 1 },
-            },
-          });
-
-          await tx.quotaTransaction.create({
-            data: {
-              quotaId: booking.quotaId,
-              subscriptionId: booking.subscriptionId,
-              type: QuotaTransactionType.USE,
-              reservedDelta: -1,
-              usedDelta: 1,
-              idempotencyKey: `absent-pt-booking-${bookingId}-${Date.now()}`,
-              referenceType: 'PT_BOOKING',
-              referenceId: bookingId,
-              reason:
-                'Hội viên vắng mặt buổi tập PT 1-1 (NO_SHOW), phạt trừ lượt tập',
-              createdBy: user.id,
-            },
-          });
+        if (replay) {
+          return replay.snapshot;
         }
+      }
 
-        return updated;
-      },
-    );
+      await this.ptCredits.lockMemberPtDomain(tx, booking.memberId);
 
-    return this.mapBookingDetail(
-      marked as unknown as RawPtBookingWithRelations,
-    );
+      const current = await tx.ptBooking.findUniqueOrThrow({
+        where: { id: bookingId },
+      });
+
+      if (current.status === BookingStatus.CANCELLED) {
+        throw new ConflictException('Không thể điểm danh buổi tập đã bị huỷ');
+      }
+
+      if (current.attendance !== AttendanceStatus.PENDING) {
+        throw new ConflictException(
+          `Buổi tập này đã được điểm danh trước đó (${current.attendance})`,
+        );
+      }
+
+      if (current.status !== BookingStatus.BOOKED) {
+        throw new ConflictException(
+          'Đặt lịch đã được xử lý. Vui lòng tải lại.',
+        );
+      }
+
+      const now = new Date();
+      assertAttendanceTime(current.startsAt, current.endsAt, true);
+      await this.ptCredits.assertPtBookingAttendanceAccessInTx(
+        tx,
+        current,
+        now,
+      );
+
+      const updated = await tx.ptBooking.update({
+        where: { id: bookingId },
+        data: {
+          status: BookingStatus.NO_SHOW,
+          attendance: AttendanceStatus.ABSENT,
+          attendedAt: null,
+        },
+        include: {
+          member: true,
+          trainer: true,
+        },
+      });
+
+      const ledgerIdempotencyKey =
+        callerIdempotencyKey ?? `pt-booking:absent:${bookingId}`;
+
+      const { quotaTransactionId } =
+        await this.ptCredits.settleBookingCreditInTx(tx, {
+          booking: current,
+          settlement: 'USE',
+          idempotencyKey: ledgerIdempotencyKey,
+          actorId: user.id,
+          reason:
+            'Hội viên vắng mặt buổi tập PT 1-1 (NO_SHOW), phạt trừ lượt tập',
+        });
+
+      const detail = this.mapBookingDetail(
+        updated as unknown as RawPtBookingWithRelations,
+      );
+
+      await this.ptCredits.saveIdempotentMutationAudit(tx, {
+        quotaTransactionId,
+        idempotencyKey: ledgerIdempotencyKey,
+        operation: 'MARK_PT_ATTENDANCE',
+        actorId: user.id,
+        payload: requestPayload,
+        resultSnapshot: detail,
+      });
+
+      return detail;
+    });
   }
 
   async findMyBookings(
@@ -921,7 +986,9 @@ export class PtBookingsService {
       trainerName: item.trainer?.fullName ?? '',
       trainerPhone: item.trainer?.phone ?? null,
       subscriptionId: item.subscriptionId,
-      quotaId: item.quotaId,
+      sourceSubscriptionId: item.sourceSubscriptionId ?? null,
+      quotaId: item.quotaId ?? null,
+      ptPurchaseId: item.ptPurchaseId ?? null,
       availabilityId: item.availabilityId ?? null,
       startsAt: item.startsAt.toISOString(),
       endsAt: item.endsAt.toISOString(),

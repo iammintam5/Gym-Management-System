@@ -178,7 +178,7 @@ test('camera HTTP endpoints preserve authentication, validation and server check
         : {}),
     });
   assert.equal((await request('/desk', null)).status, 401);
-  for (const role of ['MEMBER', 'PT']) {
+  for (const role of ['MEMBER', 'TRAINER', 'PT']) {
     assert.equal((await request('/desk', role)).status, 403);
     assert.equal(
       (

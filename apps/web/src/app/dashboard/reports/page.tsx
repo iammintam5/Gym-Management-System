@@ -442,7 +442,7 @@ export default function DashboardReportsPage() {
         <div className="rounded-[22px] border border-[#24242A] bg-[#141418] p-5">
           <div className="flex items-center justify-between">
             <span className="text-[12px] font-medium text-[#8A8A93]">
-              Khối lượng huấn luyện PT 1-1
+              Khối lượng lớp nhóm
             </span>
             <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-[#FF5500]/15 text-[#FF5500]">
               <Dumbbell className="h-4 w-4" />
@@ -452,7 +452,7 @@ export default function DashboardReportsPage() {
             {totalPtHoursInPeriod.toString().replace('.', ',')} giờ
           </p>
           <div className="mt-2 flex items-center justify-between text-[13px] text-[#8A8A93]">
-            <span>{totalPtSessionsInPeriod} buổi PT hoàn thành</span>
+            <span>{totalPtSessionsInPeriod} ca lớp đã kết thúc</span>
             <span>{trainerItems.length} HLV có ca dạy</span>
           </div>
         </div>
@@ -786,7 +786,7 @@ export default function DashboardReportsPage() {
           <div className="mb-4 flex items-center justify-between">
             <div>
               <h2 className="text-[17px] font-bold tracking-tight text-[#F5F5F7]">
-                Bảng hiệu suất huấn luyện viên PT 1-1
+                Bảng hiệu suất HLV lớp nhóm
               </h2>
               <p className="text-[12px] text-[#8A8A93]">
                 Số buổi dạy hoàn thành và tổng giờ huấn luyện thực tế trong kỳ
@@ -796,7 +796,7 @@ export default function DashboardReportsPage() {
               href="/dashboard/trainer"
               className="text-[12px] font-medium text-[#FF5500] hover:underline"
             >
-              Xem đội ngũ PT
+              Xem đội ngũ HLV
             </Link>
           </div>
 
@@ -828,7 +828,7 @@ export default function DashboardReportsPage() {
                       colSpan={5}
                       className="py-12 text-center text-[13px] text-[#6B6B75]"
                     >
-                      Chưa có ca huấn luyện PT 1-1 hoàn thành trong kỳ báo cáo.
+                      Chưa có ca lớp nhóm hoàn thành trong kỳ báo cáo.
                     </td>
                   </tr>
                 ) : (

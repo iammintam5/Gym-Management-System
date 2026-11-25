@@ -72,6 +72,9 @@ interface MemberOnboardingModalProps {
   isOpen: boolean;
   onClose: () => void;
   availablePlans: ReadonlyArray<MembershipPlanDetail>;
+  plansLoading?: boolean;
+  plansError?: string;
+  onRetryPlans?: () => void;
   onSuccess: (result: MemberOnboardingResult, summaryMessage: string) => void;
   onIncompleteMemberDismissed?: (member: MemberDetail) => void;
 }
@@ -155,6 +158,9 @@ export function MemberOnboardingModal({
   availablePlans,
   onSuccess,
   onIncompleteMemberDismissed,
+  plansLoading = false,
+  plansError = '',
+  onRetryPlans,
 }: MemberOnboardingModalProps) {
   const [flow, setFlow] = useState<OnboardingFlowState>(() =>
     createInitialOnboardingState(),
@@ -633,6 +639,7 @@ export function MemberOnboardingModal({
 
   const handleCompleteOnboarding = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (attachPlan && (plansLoading || plansError)) return;
     stopWebcam();
 
     const submission = await runOnboardingSubmission({
@@ -1560,6 +1567,29 @@ export function MemberOnboardingModal({
 
                         {attachPlan ? (
                           <div className="space-y-3">
+                            {plansLoading && (
+                              <p
+                                role="status"
+                                className="text-sm text-zinc-400"
+                              >
+                                Đang tải gói tập…
+                              </p>
+                            )}
+                            {plansError && (
+                              <p
+                                role="alert"
+                                className="text-sm text-amber-300"
+                              >
+                                {plansError}{' '}
+                                <button
+                                  type="button"
+                                  className="underline"
+                                  onClick={onRetryPlans}
+                                >
+                                  Thử lại
+                                </button>
+                              </p>
+                            )}
                             {/* Lưới hiển thị toàn bộ danh sách gói tập đang mở bán */}
                             <div className="grid max-h-[168px] grid-cols-1 gap-2.5 overflow-y-auto pr-1 sm:grid-cols-3">
                               {availablePlans.map((plan) => {
@@ -1861,7 +1891,11 @@ export function MemberOnboardingModal({
                       ) : (
                         <button
                           type="submit"
-                          disabled={isSubmitting}
+                          disabled={
+                            isSubmitting ||
+                            (attachPlan &&
+                              (plansLoading || Boolean(plansError)))
+                          }
                           className="inline-flex h-9 items-center gap-2 rounded-xl bg-[#FF5500] px-5 text-xs font-semibold text-white shadow-lg shadow-[#FF5500]/25 hover:bg-[#E64D00] disabled:opacity-50"
                         >
                           <ShieldCheck className="h-4 w-4" />

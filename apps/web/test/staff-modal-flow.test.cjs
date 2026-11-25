@@ -122,6 +122,8 @@ test('renewal success restores the profile, failure retains the form and entered
     let restored = 0;
     let busy;
     const bindings = {
+      catalogLoading: false,
+      catalogError: '',
       renewTarget: { memberId: 'member', subscriptionId: 'sub', name: 'QA' },
       PaymentStatus: { PAID: 'PAID' },
       isSubmitting: false,

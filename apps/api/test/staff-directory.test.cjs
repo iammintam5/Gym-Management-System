@@ -99,6 +99,39 @@ test(
         );
       },
     );
+    await t.test(
+      'directory summaries preserve list state without payment or duplicate member history',
+      async () => {
+        const query = { page: 1, limit: 10, search: code };
+        const full = await service.directory(query);
+        const light = await service.directory({ ...query, summary: true });
+        assert.deepEqual(light.data, full.data);
+        assert.deepEqual(light.meta, full.meta);
+        assert.equal(light.subscriptions.length, full.subscriptions.length);
+        for (const item of light.subscriptions) {
+          const original = full.subscriptions.find((sub) => sub.id === item.id);
+          assert.equal(item.effectiveStatus, original.effectiveStatus);
+          assert.equal(item.startDate, original.startDate);
+          assert.equal(item.endDate, original.endDate);
+          assert.equal(item.plan.name, original.plan.name);
+          assert.ok(!('member' in item));
+          assert.ok(!('payments' in item));
+          assert.ok(!('agreedPrice' in item));
+        }
+        assert.ok(JSON.stringify(light).length < JSON.stringify(full).length);
+        const noPhotos = await service.directory({
+          ...query,
+          summary: true,
+          includePhoto: false,
+        });
+        assert.equal(noPhotos.data[0].idPhotoUrl, null);
+        assert.equal(
+          (await client.memberProfile.findUnique({ where: { id: last.id } }))
+            .idPhotoUrl,
+          last.idPhotoUrl,
+        );
+      },
+    );
     await client.subscriptionFreeze.createMany({
       data: Array.from({ length: 120 }, (_, i) => ({
         subscriptionId: sub.id,

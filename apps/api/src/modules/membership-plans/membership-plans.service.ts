@@ -1,3 +1,4 @@
+import { CatalogReadCache } from './catalog-read-cache';
 import {
   BadRequestException,
   Injectable,
@@ -45,6 +46,7 @@ interface RawPlanWithEntitlements {
 export class MembershipPlansService {
   private readonly logger = new Logger(MembershipPlansService.name);
   private readonly ptCredits: PtCreditService;
+  private readonly catalogCache = new CatalogReadCache();
 
   constructor(
     private readonly db: DatabaseService,
@@ -191,12 +193,13 @@ export class MembershipPlansService {
   }
 
   async getServiceTypes(): Promise<ServiceTypeItem[]> {
-    const [services] = await Promise.all([
-      this.db.client.serviceType.findMany({
-        orderBy: { code: 'asc' },
-      }),
-      this.ptCredits.hasCutoverOccurred(),
-    ]);
+    return this.catalogCache.get('services', () => this.loadServiceTypes());
+  }
+
+  private async loadServiceTypes(): Promise<ServiceTypeItem[]> {
+    const services = await this.db.client.serviceType.findMany({
+      orderBy: { code: 'asc' },
+    });
     return services
       .filter((s) => s.code !== ServiceTypeCode.PT)
       .map((s) => ({
@@ -279,6 +282,7 @@ export class MembershipPlansService {
       },
     );
 
+    this.catalogCache.invalidate();
     this.logger.log(
       `Created membership plan "${createdPlan.name}" (${createdPlan.id})`,
     );
@@ -291,6 +295,22 @@ export class MembershipPlansService {
   async findAll(
     query: QueryMembershipPlansDto,
   ): Promise<PaginatedMembershipPlansResponse> {
+    const key = JSON.stringify([
+      'list',
+      query.page ?? 1,
+      query.limit ?? 20,
+      query.search ?? '',
+      query.isActive ?? null,
+      query.service ?? '',
+      query.sortBy ?? 'createdAt',
+      query.sortOrder ?? 'desc',
+    ]);
+    return this.catalogCache.get(key, () => this.loadAll(query));
+  }
+
+  private async loadAll(
+    query: QueryMembershipPlansDto,
+  ): Promise<PaginatedMembershipPlansResponse> {
     const {
       page = 1,
       limit = 20,
@@ -301,12 +321,7 @@ export class MembershipPlansService {
       sortOrder = 'desc',
     } = query;
 
-    const cutoverActive = await this.ptCredits.hasCutoverOccurred();
-    if (
-      cutoverActive &&
-      service &&
-      service.trim().toUpperCase() === ServiceTypeCode.PT
-    ) {
+    if (service && service.trim().toUpperCase() === ServiceTypeCode.PT) {
       return {
         data: [],
         meta: {
@@ -363,7 +378,7 @@ export class MembershipPlansService {
 
     return {
       data: (plans as unknown as RawPlanWithEntitlements[]).map((p) =>
-        this.mapPlanDetail(p, cutoverActive),
+        this.mapPlanDetail(p),
       ),
       meta: {
         page,
@@ -375,49 +390,48 @@ export class MembershipPlansService {
   }
 
   async findPublic(): Promise<MembershipPlanDetail[]> {
-    const [plans, cutoverActive] = await Promise.all([
-      this.db.client.membershipPlan.findMany({
-        where: { isActive: true },
-        orderBy: [{ price: 'asc' }, { createdAt: 'desc' }],
-        include: {
-          entitlements: {
-            include: {
-              serviceType: true,
-            },
+    return this.catalogCache.get('public', () => this.loadfindPublic());
+  }
+
+  private async loadfindPublic(): Promise<MembershipPlanDetail[]> {
+    const plans = await this.db.client.membershipPlan.findMany({
+      where: { isActive: true },
+      orderBy: [{ price: 'asc' }, { createdAt: 'desc' }],
+      include: {
+        entitlements: {
+          include: {
+            serviceType: true,
           },
         },
-      }),
-      this.ptCredits.hasCutoverOccurred(),
-    ]);
+      },
+    });
 
     return (plans as unknown as RawPlanWithEntitlements[]).map((p) =>
-      this.mapPlanDetail(p, cutoverActive),
+      this.mapPlanDetail(p),
     );
   }
 
   async findById(id: string): Promise<MembershipPlanDetail> {
-    const [plan, cutoverActive] = await Promise.all([
-      this.db.client.membershipPlan.findUnique({
-        where: { id },
-        include: {
-          entitlements: {
-            include: {
-              serviceType: true,
-            },
+    return this.catalogCache.get('id:' + id, () => this.loadfindById(id));
+  }
+
+  private async loadfindById(id: string): Promise<MembershipPlanDetail> {
+    const plan = await this.db.client.membershipPlan.findUnique({
+      where: { id },
+      include: {
+        entitlements: {
+          include: {
+            serviceType: true,
           },
         },
-      }),
-      this.ptCredits.hasCutoverOccurred(),
-    ]);
+      },
+    });
 
     if (!plan) {
       throw new NotFoundException(`Membership plan with ID "${id}" not found`);
     }
 
-    return this.mapPlanDetail(
-      plan as unknown as RawPlanWithEntitlements,
-      cutoverActive,
-    );
+    return this.mapPlanDetail(plan as unknown as RawPlanWithEntitlements);
   }
 
   async update(
@@ -461,28 +475,23 @@ export class MembershipPlansService {
       data.price = dto.price;
     }
 
-    const [updated, cutoverActive] = await Promise.all([
-      this.db.client.membershipPlan.update({
-        where: { id },
-        data,
-        include: {
-          entitlements: {
-            include: {
-              serviceType: true,
-            },
+    const updated = await this.db.client.membershipPlan.update({
+      where: { id },
+      data,
+      include: {
+        entitlements: {
+          include: {
+            serviceType: true,
           },
         },
-      }),
-      this.ptCredits.hasCutoverOccurred(),
-    ]);
+      },
+    });
 
+    this.catalogCache.invalidate();
     this.logger.log(
       `Updated membership plan "${updated.name}" (${updated.id})`,
     );
-    return this.mapPlanDetail(
-      updated as unknown as RawPlanWithEntitlements,
-      cutoverActive,
-    );
+    return this.mapPlanDetail(updated as unknown as RawPlanWithEntitlements);
   }
 
   async updateStatus(
@@ -496,30 +505,25 @@ export class MembershipPlansService {
       throw new NotFoundException(`Membership plan with ID "${id}" not found`);
     }
 
-    const [updated, cutoverActive] = await Promise.all([
-      this.db.client.membershipPlan.update({
-        where: { id },
-        data: {
-          isActive: dto.isActive,
-        },
-        include: {
-          entitlements: {
-            include: {
-              serviceType: true,
-            },
+    const updated = await this.db.client.membershipPlan.update({
+      where: { id },
+      data: {
+        isActive: dto.isActive,
+      },
+      include: {
+        entitlements: {
+          include: {
+            serviceType: true,
           },
         },
-      }),
-      this.ptCredits.hasCutoverOccurred(),
-    ]);
+      },
+    });
 
+    this.catalogCache.invalidate();
     this.logger.log(
       `Updated membership plan status "${updated.name}" (${updated.id}) to isActive=${updated.isActive}`,
     );
-    return this.mapPlanDetail(
-      updated as unknown as RawPlanWithEntitlements,
-      cutoverActive,
-    );
+    return this.mapPlanDetail(updated as unknown as RawPlanWithEntitlements);
   }
 
   async updateEntitlements(
@@ -582,6 +586,7 @@ export class MembershipPlansService {
       },
     );
 
+    this.catalogCache.invalidate();
     this.logger.log(
       `Updated entitlements for membership plan "${updatedPlan.name}" (${updatedPlan.id})`,
     );

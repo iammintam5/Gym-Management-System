@@ -33,16 +33,20 @@ function load(file, imports, testWindow) {
   return exports;
 }
 
-function harness(file, apiClient) {
+function harness(file, apiClient, options = {}) {
   apiClient.get ??= apiClient;
   const states = [],
     refs = [],
     effectDeps = [],
-    timers = new Map();
+    timers = new Map(),
+    callbacks = [],
+    callbackDeps = [],
+    cleanups = [];
   let stateCursor = 0,
     refCursor = 0,
     effectCursor = 0,
-    timerId = 0;
+    timerId = 0,
+    callbackCursor = 0;
   const effects = [];
   const react = {
     useState(initial) {
@@ -62,8 +66,16 @@ function harness(file, apiClient) {
       if (!(index in refs)) refs[index] = { current: initial };
       return refs[index];
     },
-    useCallback(fn) {
-      return fn;
+    useCallback(fn, deps) {
+      const index = callbackCursor++;
+      if (
+        !callbackDeps[index] ||
+        deps.some((value, key) => value !== callbackDeps[index][key])
+      ) {
+        callbacks[index] = fn;
+        callbackDeps[index] = deps;
+      }
+      return callbacks[index];
     },
     useEffect(fn, deps) {
       const index = effectCursor++;
@@ -72,14 +84,20 @@ function harness(file, apiClient) {
         deps.some((value, key) => value !== effectDeps[index][key])
       ) {
         effectDeps[index] = deps;
-        effects.push(fn);
+        effects.push(() => {
+          cleanups[index]?.();
+          cleanups[index] = fn();
+        });
       }
     },
   };
   const window = {
-    setTimeout(fn) {
+    location: { search: options.search ?? '' },
+    history: { replaceState() {} },
+    print() {},
+    setTimeout(fn, delay = 0) {
       const id = ++timerId;
-      timers.set(id, fn);
+      timers.set(id, { fn, delay });
       return id;
     },
     clearTimeout(id) {
@@ -98,6 +116,28 @@ function harness(file, apiClient) {
     file,
     (name) => {
       if (name === 'react') return react;
+      if (name === 'next/image' || name === 'next/link')
+        return { default: name === 'next/image' ? 'img' : 'a' };
+      if (name === '@/features/members/member-onboarding-modal')
+        return { MemberOnboardingModal: 'MemberOnboardingModal' };
+      if (name === '@/features/members/member-quick-view')
+        return { MemberQuickView: 'MemberQuickView' };
+      if (name === '@/features/members/member-profile-drawer')
+        return { MemberProfileDrawer: 'MemberProfileDrawer' };
+      if (name === '@/features/members/face-conflicts')
+        return { FaceConflicts: 'FaceConflicts' };
+      if (name === '@/components/ui/discard-changes-dialog')
+        return { DiscardChangesDialog: 'DiscardChangesDialog' };
+      if (name === '@/features/members/photo-validation-client')
+        return { sharedMemberPhotoValidator: {} };
+      if (name === '@/features/members/member-photo-flow')
+        return {
+          resolvePhotoValidationStatus: () => 'empty',
+          isSupportedPhotoDataUri: () => false,
+          formatPhotoValidationFeedback: () => '',
+          hasStaffMemberPhotoChanged: () => false,
+        };
+
       if (name === 'react/jsx-runtime')
         return {
           jsx: (type, props) => ({ type, props }),
@@ -107,7 +147,10 @@ function harness(file, apiClient) {
       if (name === '@gym/contracts') return contracts;
       if (name === '@/stores/auth-store')
         return {
-          useAuthStore: (selector) => selector({ user: { roles: ['ADMIN'] } }),
+          useAuthStore: (selector) =>
+            selector
+              ? selector({ user: { roles: ['ADMIN'] } })
+              : { user: { roles: ['ADMIN'] } },
         };
       if (name === '@/services/api-client')
         return { apiClient, ApiClientError: Error };
@@ -120,7 +163,11 @@ function harness(file, apiClient) {
           formatVnd: (value) => value + 'đ',
           formatDurationVi: (days) => days + ' ngày',
         };
-      if (name === '@/lib/utils') return { formatReceiptNumber: (id) => id };
+      if (name === '@/lib/utils')
+        return {
+          formatReceiptNumber: (id) => id,
+          cn: (...values) => values.filter(Boolean).join(' '),
+        };
       if (name === 'lucide-react')
         return new Proxy({}, { get: (_, key) => String(key) });
       if (name === '@/components/ui/modal-frame')
@@ -148,14 +195,15 @@ function harness(file, apiClient) {
   );
   return {
     render(component, props) {
-      stateCursor = refCursor = effectCursor = 0;
+      stateCursor = refCursor = effectCursor = callbackCursor = 0;
       return loadedModule[component](props);
     },
-    async flush() {
+    async flush(maxDelay = Infinity) {
       for (const effect of effects.splice(0)) effect();
       for (const [id, timer] of [...timers]) {
+        if (timer.delay > maxDelay) continue;
         timers.delete(id);
-        timer();
+        timer.fn();
       }
       for (let index = 0; index < 10; index++)
         await new Promise((resolve) => setImmediate(resolve));

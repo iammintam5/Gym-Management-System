@@ -91,3 +91,20 @@ export interface MemberFaceError {
 export interface MemberDirectoryResponse extends PaginatedMembersResponse {
   subscriptions: import('../subscriptions').SubscriptionDetail[];
 }
+
+/** List-only subscription data. Financial history is fetched from the member profile. */
+export type MemberDirectorySubscriptionSummary = Pick<
+  import('../subscriptions').SubscriptionDetail,
+  | 'id'
+  | 'memberId'
+  | 'planId'
+  | 'startDate'
+  | 'endDate'
+  | 'effectiveStatus'
+  | 'plan'
+  | 'quotas'
+>;
+
+export interface MemberDirectorySummaryResponse extends PaginatedMembersResponse {
+  subscriptions: MemberDirectorySubscriptionSummary[];
+}

@@ -38,196 +38,41 @@ function transpileAndRun(relativePath, bindings = {}) {
   return mod.exports;
 }
 
-test('staff/pos/page.tsx displays standalone PT package name on payment rows without subscription link', async () => {
-  const states = [];
-  const effects = [];
-  const el = (type, props) => ({ type, props });
-  const iconProxy = new Proxy({}, { get: (_, prop) => String(prop) });
-
-  const apiClientMock = async (url) => {
-    if (url.startsWith('/payments?')) {
-      return {
-        data: [
-          {
-            id: 'a1b2c3d4-0000-4000-8000-000000000001',
-            subscriptionId: null,
-            ptPurchaseId: 'pt-pur-1',
-            memberId: 'mem-1',
-            memberCode: 'MEM-00000001',
-            memberFullName: 'Nguyen Van A',
-            amount: 4000000,
-            currency: 'VND',
-            status: contracts.PaymentStatus.PAID,
-            method: 'TRANSFER',
-            note: null,
-            confirmedBy: 'staff-1',
-            confirmedByName: 'Cashier',
-            confirmedAt: '2026-11-17T03:00:00.000Z',
-            createdAt: '2026-11-17T03:00:00.000Z',
-            ptPurchase: {
-              id: 'pt-pur-1',
-              packageCode: 'PT10',
-              packageName: 'Gói PT 10 buổi (60 phút)',
-              sessionCount: 10,
-              sessionMinutes: 60,
-            },
-          },
-        ],
-        meta: { page: 1, limit: 10, total: 1, totalPages: 1 },
-      };
-    }
-    if (url.startsWith('/members?')) {
-      return {
-        data: [],
-        meta: { page: 1, limit: 100, total: 0, totalPages: 1 },
-      };
-    }
-    if (url.startsWith('/membership-plans?')) {
-      return {
-        data: [],
-        meta: { page: 1, limit: 50, total: 0, totalPages: 1 },
-      };
-    }
-    throw new Error(`Unexpected request: ${url}`);
-  };
+test('staff/pos/page.tsx preserves historical PT receipts without loading PT sale controls', async () => {
+  const { harness, nodes, text } = require('./helpers/component-harness.cjs');
   let receiptRequests = 0;
-  apiClientMock.get = async (url) => {
-    if (url.startsWith('/payments/')) receiptRequests += 1;
-    return apiClientMock(url);
+  const api = async (url) => {
+    if (url.includes('/receipt')) {
+      receiptRequests++;
+      return {};
+    }
+    if (!url.startsWith('/payments?'))
+      throw Error('Unexpected initial request: ' + url);
+    return {
+      data: [
+        {
+          id: 'receipt',
+          memberId: 'member',
+          memberCode: 'MEM-00000001',
+          memberFullName: 'Nguyen Van A',
+          ptPurchase: { packageName: 'Gói PT 10 buổi (60 phút)' },
+          amount: 4000000,
+          status: contracts.PaymentStatus.PAID,
+          method: 'TRANSFER',
+          createdAt: '2026-11-17T03:00:00Z',
+        },
+      ],
+      meta: { total: 1, totalPages: 1 },
+    };
   };
-
-  let cursor = 0;
-  const scheduledFns = [];
-  const posMod = transpileAndRun('src/app/dashboard/staff/pos/page.tsx', {
-    window: {
-      location: { search: '' },
-      history: { replaceState: () => {} },
-      setTimeout: (fn) => {
-        scheduledFns.push(fn);
-        return scheduledFns.length;
-      },
-      clearTimeout: () => {},
-      print: () => {},
-    },
-    __require(name) {
-      if (name === '@/features/pt-bookings/staff-pt-booking')
-        return { StaffPtBookingButton: 'StaffPtBookingButton' };
-      if (name === '@/features/pt-assignments/pt-assignment')
-        return {
-          MemberPtAssignments: 'MemberPtAssignments',
-          SubscriptionPtAssignment: 'SubscriptionPtAssignment',
-          TrainerAssignedMembers: 'TrainerAssignedMembers',
-        };
-      if (name.startsWith('@/features/pt-packages/'))
-        return {
-          PtPackageSaleButton: 'PtPackageSaleButton',
-          PtPackageCatalog: 'PtPackageCatalog',
-          MemberPtPackages: 'MemberPtPackages',
-        };
-      if (name === 'react') {
-        return {
-          useState: (init) => {
-            const idx = cursor++;
-            if (!(idx in states)) {
-              states[idx] = typeof init === 'function' ? init() : init;
-            }
-            return [
-              states[idx],
-              (val) => {
-                states[idx] =
-                  typeof val === 'function' ? val(states[idx]) : val;
-              },
-            ];
-          },
-          useEffect: (fn) => {
-            effects.push(fn);
-          },
-          useCallback: (fn) => fn,
-          useRef: (v) => ({ current: v }),
-        };
-      }
-      if (name === 'react/jsx-runtime') {
-        return { jsx: el, jsxs: el, Fragment: 'Fragment' };
-      }
-      if (name === 'lucide-react') return iconProxy;
-      if (name === '@/stores/auth-store') {
-        return {
-          useAuthStore: () => ({
-            user: { id: 'admin-1', roles: [contracts.UserRole.ADMIN] },
-          }),
-        };
-      }
-      if (name === '@/features/members/member-quick-view') {
-        return { MemberQuickView: 'MemberQuickView' };
-      }
-      if (name === '@/features/members/member-onboarding-modal') {
-        return { MemberOnboardingModal: 'MemberOnboardingModal' };
-      }
-      if (name === '@/components/shared/domain-status-badge') {
-        return { PaymentStatusBadge: 'PaymentStatusBadge' };
-      }
-      if (name === '@/components/shared/data-state') {
-        return { DataState: 'DataState' };
-      }
-      if (name === '@/components/shared/table-pagination') {
-        return { TablePagination: 'TablePagination' };
-      }
-      if (name === '@/components/ui/modal-frame') {
-        return { ModalFrame: 'ModalFrame' };
-      }
-      if (name === '@/lib/staff-date') {
-        return { staffDate: () => '2026-11-17' };
-      }
-      if (name === '@/lib/staff-request-key') {
-        return { stableStaffRequestKey: () => 'req-key-1' };
-      }
-      if (name === '@/lib/formatters') {
-        return {
-          formatVnd: (n) => `${n}đ`,
-          formatDurationVi: (d) => `${d} ngày`,
-        };
-      }
-      if (name === '@/lib/utils') {
-        return {
-          formatReceiptNumber: () => 'REC-20261117-A1B2C3D4',
-        };
-      }
-      if (name === '@/services/api-client') {
-        return { apiClient: apiClientMock, ApiClientError: Error };
-      }
-      throw new Error(`Unexpected require: ${name}`);
-    },
-  });
-
-  posMod.default();
-  for (const eff of effects) eff();
-  for (const fn of scheduledFns) fn();
-  for (let i = 0; i < 10; i += 1) {
-    await new Promise((resolve) => setImmediate(resolve));
+  const view = harness('src/app/dashboard/staff/pos/page.tsx', api);
+  for (let i = 0; i < 3; i++) {
+    view.render('default');
+    await view.flush();
   }
-
-  cursor = 0;
-  const rendered = posMod.default();
-  const texts = [];
-  let saleButton = null;
-  const walk = (node) => {
-    if (node == null || typeof node === 'boolean') return;
-    if (typeof node === 'string' || typeof node === 'number') {
-      texts.push(String(node));
-      return;
-    }
-    if (Array.isArray(node)) {
-      node.forEach(walk);
-      return;
-    }
-    if (node.type === 'PtPackageSaleButton') saleButton = node.props;
-    if (typeof node === 'object' && node.props?.children !== undefined) {
-      walk(node.props.children);
-    }
-  };
-  walk(rendered);
-  assert.ok(texts.join(' ').includes('Gói PT 10 buổi (60 phút)'));
-  assert.equal(saleButton, null, 'Retired PT sales must not be offered');
+  const tree = view.render('default');
+  assert.match(text(tree), /Gói PT 10 buổi \(60 phút\)/);
+  assert.ok(!nodes(tree).some((node) => node.type === 'PtPackageSaleButton'));
   assert.equal(receiptRequests, 0);
 });
 

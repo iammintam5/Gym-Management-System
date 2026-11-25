@@ -2,9 +2,18 @@ import { PaymentStatus } from '../common';
 
 export type PaymentMethod = 'CASH' | 'TRANSFER';
 
+export interface PaymentPtPurchaseSummary {
+  id: string;
+  packageCode: string | null;
+  packageName: string;
+  sessionCount: number | null;
+  sessionMinutes: number;
+}
+
 export interface PaymentRecordDetail {
   id: string;
-  subscriptionId: string;
+  subscriptionId: string | null;
+  ptPurchaseId?: string | null;
   memberId: string;
   memberCode: string;
   memberFullName: string;
@@ -22,6 +31,7 @@ export interface PaymentRecordDetail {
     startDate: string;
     endDate: string;
   };
+  ptPurchase?: PaymentPtPurchaseSummary | null;
 }
 
 export interface PaymentReceipt {
@@ -31,6 +41,7 @@ export interface PaymentReceipt {
   currency: string;
   method: string;
   note: string | null;
+  targetType?: 'SUBSCRIPTION' | 'PT_PACKAGE';
   member: {
     fullName: string;
     memberCode: string;
@@ -42,6 +53,7 @@ export interface PaymentReceipt {
     startDate: string;
     endDate: string;
   };
+  ptPurchase?: PaymentPtPurchaseSummary | null;
   cashier: {
     fullName: string;
   };

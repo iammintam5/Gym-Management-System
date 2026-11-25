@@ -154,8 +154,9 @@ export class SubscriptionsController {
   async cancel(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: CancelSubscriptionDto,
+    @CurrentUser() currentUser: AuthUser,
   ): Promise<SubscriptionDetail> {
-    return this.subscriptionsService.cancel(id, dto);
+    return this.subscriptionsService.cancel(id, dto, currentUser.id);
   }
 
   @Post(':id/renew')

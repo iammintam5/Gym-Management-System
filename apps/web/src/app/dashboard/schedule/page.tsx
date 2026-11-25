@@ -218,6 +218,9 @@ export default function ClassSchedulePage() {
   const [classTemplates, setClassTemplates] = useState<
     ReadonlyArray<GymClassDetail>
   >([]);
+  const [eligibleClassTrainers, setEligibleClassTrainers] = useState<
+    ReadonlyArray<TrainerSummary>
+  >([]);
   const [trainerOptions, setTrainerOptions] = useState<
     ReadonlyArray<TrainerSummary>
   >([]);
@@ -290,7 +293,7 @@ export default function ClassSchedulePage() {
       const [classesRes, schedulesRes, trainersRes] = await Promise.allSettled([
         apiClient<PaginatedClassesResponse>('/classes?limit=100'),
         apiClient<PaginatedClassSchedulesResponse>(scheduleQuery),
-        apiClient<TrainerSummary[]>('/trainers'),
+        apiClient<TrainerSummary[]>('/trainers?service=CLASS'),
       ]);
 
       assertDataLoaded([classesRes, schedulesRes]);
@@ -304,11 +307,13 @@ export default function ClassSchedulePage() {
         }
       }
 
+      const eligibleList =
+        trainersRes.status === 'fulfilled' ? trainersRes.value : [];
+      setEligibleClassTrainers(eligibleList);
+
       const trainerMap = new Map<string, TrainerSummary>();
-      if (trainersRes.status === 'fulfilled') {
-        for (const t of trainersRes.value) {
-          trainerMap.set(t.id, t);
-        }
+      for (const t of eligibleList) {
+        trainerMap.set(t.id, t);
       }
 
       if (schedulesRes.status === 'fulfilled') {
@@ -318,15 +323,17 @@ export default function ClassSchedulePage() {
               id: sch.trainerId,
               fullName: sch.trainerName,
               specialization: null,
+              specialties: [],
+              canTeachClasses: false,
+              canCoachPt: false,
             });
           }
         }
       }
 
-      const trainersList = Array.from(trainerMap.values());
-      setTrainerOptions(trainersList);
-      if (trainersList[0]) {
-        const defaultTrainerId = trainersList[0].id;
+      setTrainerOptions(Array.from(trainerMap.values()));
+      if (eligibleList[0]) {
+        const defaultTrainerId = eligibleList[0].id;
         setFormTrainerId((prev) => prev || defaultTrainerId);
       }
 
@@ -470,9 +477,11 @@ export default function ClassSchedulePage() {
     if (firstActiveClass) {
       setFormClassId(firstActiveClass.id);
     }
-    if (!formTrainerId && trainerOptions[0]) {
-      setFormTrainerId(trainerOptions[0].id);
-    }
+    setFormTrainerId((prev) =>
+      eligibleClassTrainers.some((t) => t.id === prev)
+        ? prev
+        : (eligibleClassTrainers[0]?.id ?? ''),
+    );
     setFormDurationMinutes('60');
     setFormCapacity('20');
     setScheduleModalOpen(true);
@@ -737,6 +746,25 @@ export default function ClassSchedulePage() {
     () => calculateEndTimeHm(formStartTime, Number(formDurationMinutes) || 0),
     [formStartTime, formDurationMinutes],
   );
+  const modalTrainerOptions = useMemo(() => {
+    if (!editingScheduleId) {
+      return eligibleClassTrainers;
+    }
+    if (!formTrainerId || eligibleClassTrainers.some((t) => t.id === formTrainerId)) {
+      return eligibleClassTrainers;
+    }
+    const currentAssigned = trainerOptions.find((t) => t.id === formTrainerId);
+    if (!currentAssigned) {
+      return eligibleClassTrainers;
+    }
+    return [
+      ...eligibleClassTrainers,
+      {
+        ...currentAssigned,
+        fullName: `${currentAssigned.fullName} (Đang phụ trách ca này)`,
+      },
+    ];
+  }, [editingScheduleId, eligibleClassTrainers, formTrainerId, trainerOptions]);
 
   return (
     <div className="space-y-5">
@@ -1132,15 +1160,23 @@ export default function ClassSchedulePage() {
                     onChange={(e) => setFormTrainerId(e.target.value)}
                     className="h-10 w-full appearance-none rounded-xl border border-white/[0.08] bg-[#18181C] pl-3.5 pr-9 text-[13px] text-white transition-colors focus:border-[#FF5500] focus:outline-none"
                   >
-                    {trainerOptions.map((t) => (
-                      <option
-                        key={t.id}
-                        value={t.id}
-                        className="bg-[#141418] text-white"
-                      >
-                        {t.fullName}
+                    {modalTrainerOptions.length === 0 ? (
+                      <option value="" className="bg-[#141418] text-zinc-400">
+                        Chưa có huấn luyện viên phụ trách lớp nhóm
                       </option>
-                    ))}
+                    ) : (
+                      modalTrainerOptions.map((t) => (
+                        <option
+                          key={t.id}
+                          value={t.id}
+                          className="bg-[#141418] text-white"
+                        >
+                          {t.specialties.length > 0
+                            ? `${t.fullName} — ${t.specialties.join(', ')}`
+                            : t.fullName}
+                        </option>
+                      ))
+                    )}
                   </select>
                   <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
                 </div>

@@ -388,8 +388,8 @@ export default function Home() {
                 HUẤN LUYỆN VIÊN GIÀU KINH NGHIỆM
               </h3>
               <p className="mt-1.5 text-xs text-zinc-400">
-                Giáo án cá nhân hóa sát với thể trạng từng hội viên, cam kết
-                đồng hành xuyên suốt lộ trình tập luyện.
+                Các lớp học có HLV phụ trách, hướng dẫn kỹ thuật và hỗ trợ hội
+                viên luyện tập phù hợp với bộ môn.
               </p>
             </div>
 
@@ -426,7 +426,7 @@ export default function Home() {
           </h2>
           <p className="max-w-md text-xs leading-relaxed text-zinc-400">
             Lựa chọn gói thẻ hội viên linh hoạt theo nhu cầu tập Full Gym, Group
-            Class năng động hoặc kèm riêng PT 1-1.
+            Class năng động và các tiện ích tại phòng tập.
           </p>
         </div>
 
@@ -437,7 +437,7 @@ export default function Home() {
       <section id="trainers" className="mx-auto max-w-6xl px-6">
         <div className="mb-8">
           <h2 className="font-heading text-2xl font-bold uppercase text-white sm:text-3xl">
-            ĐỘI NGŨ PT &amp; COACH
+            ĐỘI NGŨ HUẤN LUYỆN VIÊN
           </h2>
           <p className="mt-1 max-w-xs text-xs text-zinc-400">
             Chuyên môn vững vàng, tận tâm hướng dẫn kỹ thuật chuẩn xác trong
@@ -544,7 +544,7 @@ export default function Home() {
             </div>
             <p className="text-xs leading-relaxed text-zinc-500">
               Hệ thống câu lạc bộ thể hình, lớp tập nhóm chuyên sâu và huấn
-              luyện viên cá nhân 1-1 hàng đầu.
+              luyện viên bộ môn giàu kinh nghiệm.
             </p>
           </div>
 
@@ -576,7 +576,7 @@ export default function Home() {
               DỊCH VỤ
             </h3>
             <ul className="mt-3 space-y-2 text-xs text-zinc-400">
-              <li>Personal Trainer (PT 1-1)</li>
+              <li>Lớp Yoga, Boxing, HIIT</li>
               <li>Group Class / Group X</li>
               <li>Full Gym Member Pass</li>
             </ul>

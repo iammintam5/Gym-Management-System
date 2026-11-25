@@ -56,7 +56,7 @@ const INITIAL_KPI_CARDS: ReadonlyArray<KpiCardItem> = [
     icon: Users,
   },
   {
-    label: 'Đội ngũ PT',
+    label: 'Huấn luyện viên',
     value: '0',
     sublabel: 'Coach đang dạy',
     trend: '0,0%',
@@ -153,7 +153,7 @@ export default function DashboardOverviewPage() {
     if (user.roles.includes(UserRole.ADMIN)) return;
     if (user.roles.includes(UserRole.STAFF)) {
       router.replace('/dashboard/staff');
-    } else if (user.roles.includes(UserRole.PT)) {
+    } else if (user.roles.includes(UserRole.TRAINER)) {
       router.replace('/dashboard/schedule');
     } else if (user.roles.includes(UserRole.MEMBER)) {
       router.replace('/dashboard/member');
@@ -204,7 +204,7 @@ export default function DashboardOverviewPage() {
       const activePtList =
         employeesRes.status === 'fulfilled'
           ? employeesRes.value.data.filter(
-              (e) => e.roles.includes(UserRole.PT) && e.isActive,
+              (e) => e.roles.includes(UserRole.TRAINER) && e.isActive,
             )
           : [];
 
@@ -255,9 +255,9 @@ export default function DashboardOverviewPage() {
             icon: Users,
           },
           {
-            label: 'Đội ngũ PT',
+            label: 'Huấn luyện viên',
             value: trainerCount.toLocaleString('vi-VN'),
-            sublabel: `${s.operations.ptSessionsCompletedCount} ca PT 1-1 hoàn thành`,
+            sublabel: `${s.operations.classesConductedCount} ca lớp trong tháng`,
             trend: `${totalPtHours}h dạy`,
             icon: Dumbbell,
           },
@@ -316,7 +316,10 @@ export default function DashboardOverviewPage() {
                 return {
                   code: emp.employeeCode,
                   name: emp.fullName,
-                  specialty: emp.specialization ?? 'Huấn luyện viên cá nhân',
+                  specialty:
+                    emp.specialties.length > 0
+                      ? emp.specialties.join(', ')
+                      : (emp.specialization ?? 'Huấn luyện viên cá nhân'),
                   sessionsCount: String(perf?.completedSessionsCount ?? 0),
                   hoursCount: `${perf?.totalTrainingHours ?? 0} giờ`,
                 };
@@ -578,7 +581,7 @@ export default function DashboardOverviewPage() {
           <div>
             <div className="mb-4 flex items-center justify-between">
               <h2 className="text-lg font-bold text-white">
-                Đội ngũ PT &amp; Coach
+                Đội ngũ huấn luyện viên
               </h2>
               <Link
                 href="/dashboard/trainer"

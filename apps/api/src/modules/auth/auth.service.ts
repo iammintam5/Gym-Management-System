@@ -3,13 +3,14 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { createHash, randomUUID } from 'node:crypto';
 import bcrypt from 'bcryptjs';
-import type {
-  AccessTokenClaims,
-  AuthUserProfile,
-  LoginResponse,
-  RefreshTokenClaims,
-  TokenPair,
-  UserRole,
+import {
+  normalizePersistedUserRoles,
+  type AccessTokenClaims,
+  type AuthUserProfile,
+  type LoginResponse,
+  type RefreshTokenClaims,
+  type TokenPair,
+  type UserRole,
 } from '@gym/contracts';
 import { DatabaseService } from '../database/database.module';
 import { JWT_AUDIENCE, JWT_ISSUER } from '../../common/constants/auth';
@@ -161,7 +162,9 @@ export class AuthService {
       throw new UnauthorizedException('Invalid credentials');
     }
 
-    const roles = user.roles.map((r) => r.role.code as UserRole);
+    const roles = normalizePersistedUserRoles(
+      user.roles.map((r) => r.role.code),
+    );
     const tokens = await this.generateTokens(user.id, roles);
 
     const userProfile: AuthUserProfile = {
@@ -222,7 +225,9 @@ export class AuthService {
       throw new UnauthorizedException('User not found or inactive');
     }
 
-    const roles = user.roles.map((r) => r.role.code as UserRole);
+    const roles = normalizePersistedUserRoles(
+      user.roles.map((r) => r.role.code),
+    );
     if (typeof payload.sid === 'string') {
       const session = await this.db.client.authSession.findUnique({
         where: { id: payload.sid },
@@ -312,7 +317,7 @@ export class AuthService {
       id: user.id,
       email: user.email,
       isActive: user.isActive,
-      roles: user.roles.map((r) => r.role.code as UserRole),
+      roles: normalizePersistedUserRoles(user.roles.map((r) => r.role.code)),
       fullName:
         user.employeeProfile?.fullName ?? user.memberProfile?.fullName ?? null,
       phone: user.employeeProfile?.phone ?? user.memberProfile?.phone ?? null,

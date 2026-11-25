@@ -4,11 +4,13 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import {
   BookingStatus,
   PaymentStatus,
   QuotaTransactionType,
+  ServiceTypeCode,
   SubscriptionStatus,
   type PaginatedSubscriptionsResponse,
   type SubscriptionDetail,
@@ -17,13 +19,14 @@ import {
   type SubscriptionPlanSummary,
   type SubscriptionQuotaSummary,
 } from '@gym/contracts';
+import { PtPurchaseOrigin as DbPtPurchaseOrigin } from '@gym/database';
 import { memberCodeRange } from '../common/member-code';
-import { lockScheduleWrites } from '../common/booking-access';
 import {
   previousStaffRequest,
   saveStaffRequest,
 } from '../common/staff-request';
 import { DatabaseService } from '../database/database.module';
+import { PtCreditService } from '../pt-packages/pt-credit.service';
 import { resolveEffectiveStatus } from './helpers/subscription-status.helper';
 import {
   calculateEndDate,
@@ -35,6 +38,8 @@ import type { QuerySubscriptionsDto } from './dto/query-subscriptions.dto';
 import type { RenewSubscriptionDto } from './dto/renew-subscription.dto';
 
 interface RawSubscriptionWithRelations {
+  assignedTrainer?: { id: string; fullName: string } | null;
+  ptAssignmentVersion?: number;
   _count?: { freezes: number };
   id: string;
   memberId: string;
@@ -87,19 +92,41 @@ interface RawSubscriptionWithRelations {
     method: string | null;
     confirmedAt: Date | null;
   }>;
+  ptPackagePurchases?: Array<{
+    legacyQuotaId: string | null;
+    allocated: number | null;
+    reserved: number;
+    used: number;
+  }>;
 }
 
 @Injectable()
 export class SubscriptionsService {
   private readonly logger = new Logger(SubscriptionsService.name);
+  private readonly ptCredits: PtCreditService;
 
-  constructor(private readonly db: DatabaseService) {}
+  constructor(
+    private readonly db: DatabaseService,
+    @Optional() ptCreditService?: PtCreditService,
+  ) {
+    this.ptCredits = ptCreditService ?? new PtCreditService(this.db);
+  }
 
   private readonly subscriptionInclude = {
+    assignedTrainer: { select: { id: true, fullName: true } },
     member: { include: { user: true } },
     plan: true,
     quotas: { include: { serviceType: true } },
     payments: true,
+    ptPackagePurchases: {
+      where: { origin: DbPtPurchaseOrigin.LEGACY_BUNDLED },
+      select: {
+        legacyQuotaId: true,
+        allocated: true,
+        reserved: true,
+        used: true,
+      },
+    },
   } as const;
 
   private async replayRequest(
@@ -166,14 +193,26 @@ export class SubscriptionsService {
       price: planPriceNum,
     };
 
-    const quotas: SubscriptionQuotaSummary[] = (sub.quotas || []).map((q) => ({
-      id: q.id,
-      service: q.serviceType.code,
-      serviceName: q.serviceType.name,
-      allocated: q.allocated,
-      reserved: q.reserved,
-      used: q.used,
-    }));
+    const mappedPtByQuotaId = new Map(
+      (sub.ptPackagePurchases ?? [])
+        .filter((p) => p.legacyQuotaId !== null)
+        .map((p) => [p.legacyQuotaId as string, p]),
+    );
+
+    const quotas: SubscriptionQuotaSummary[] = (sub.quotas || []).map((q) => {
+      const mappedPt =
+        q.serviceType.code === ServiceTypeCode.PT
+          ? mappedPtByQuotaId.get(q.id)
+          : undefined;
+      return {
+        id: q.id,
+        service: q.serviceType.code,
+        serviceName: q.serviceType.name,
+        allocated: mappedPt ? mappedPt.allocated : q.allocated,
+        reserved: mappedPt ? mappedPt.reserved : q.reserved,
+        used: mappedPt ? mappedPt.used : q.used,
+      };
+    });
 
     const payments: SubscriptionPaymentSummary[] = (sub.payments || []).map(
       (p) => ({
@@ -195,6 +234,8 @@ export class SubscriptionsService {
       memberId: sub.memberId,
       planId: sub.planId,
       previousSubscriptionId: sub.previousSubscriptionId ?? null,
+      assignedTrainer: sub.assignedTrainer ?? null,
+      ptAssignmentVersion: sub.ptAssignmentVersion ?? 0,
       startDate: sub.startDate.toISOString(),
       endDate: sub.endDate.toISOString(),
       storedStatus: sub.status as SubscriptionStatus,
@@ -231,6 +272,14 @@ export class SubscriptionsService {
     ) {
       throw new BadRequestException(
         'Chỉ có thể tạo gói với thanh toán PENDING hoặc PAID.',
+      );
+    }
+    if (
+      dto.paymentMethod &&
+      !['CASH', 'TRANSFER'].includes(dto.paymentMethod.trim().toUpperCase())
+    ) {
+      throw new BadRequestException(
+        'Phương thức thanh toán mới chỉ hỗ trợ CASH hoặc TRANSFER.',
       );
     }
     // 1. Validate member existence and active account
@@ -361,10 +410,13 @@ export class SubscriptionsService {
         },
       });
 
-      // Create snapshot quotas for entitlements
-      if (plan.entitlements && plan.entitlements.length > 0) {
+      // Create snapshot quotas for entitlements (after PT cutover, Gym plans no longer mint bundled PT quotas)
+      const entitlementsToCreate = (plan.entitlements ?? []).filter(
+        (e) => e.serviceType.code !== ServiceTypeCode.PT,
+      );
+      if (entitlementsToCreate.length > 0) {
         await tx.subscriptionQuota.createMany({
-          data: plan.entitlements.map((e) => ({
+          data: entitlementsToCreate.map((e) => ({
             subscriptionId: sub.id,
             serviceTypeId: e.serviceTypeId,
             allocated: e.allocated,
@@ -399,12 +451,7 @@ export class SubscriptionsService {
       );
       return tx.subscription.findUniqueOrThrow({
         where: { id: sub.id },
-        include: {
-          member: { include: { user: true } },
-          plan: true,
-          quotas: { include: { serviceType: true } },
-          payments: true,
-        },
+        include: this.subscriptionInclude,
       });
     });
 
@@ -536,6 +583,15 @@ export class SubscriptionsService {
           plan: true,
           quotas: { include: { serviceType: true } },
           payments: true,
+          ptPackagePurchases: {
+            where: { origin: DbPtPurchaseOrigin.LEGACY_BUNDLED },
+            select: {
+              legacyQuotaId: true,
+              allocated: true,
+              reserved: true,
+              used: true,
+            },
+          },
         },
       }),
     ]);
@@ -556,12 +612,7 @@ export class SubscriptionsService {
   async findById(id: string): Promise<SubscriptionDetail> {
     const sub = await this.db.client.subscription.findUnique({
       where: { id },
-      include: {
-        member: { include: { user: true } },
-        plan: true,
-        quotas: { include: { serviceType: true } },
-        payments: true,
-      },
+      include: this.subscriptionInclude,
     });
 
     if (!sub) {
@@ -603,6 +654,15 @@ export class SubscriptionsService {
         plan: true,
         quotas: { include: { serviceType: true } },
         payments: true,
+        ptPackagePurchases: {
+          where: { origin: DbPtPurchaseOrigin.LEGACY_BUNDLED },
+          select: {
+            legacyQuotaId: true,
+            allocated: true,
+            reserved: true,
+            used: true,
+          },
+        },
       },
     });
 
@@ -629,12 +689,7 @@ export class SubscriptionsService {
         endDate: { gte: now },
       },
       orderBy: { startDate: 'desc' },
-      include: {
-        member: { include: { user: true } },
-        plan: true,
-        quotas: { include: { serviceType: true } },
-        payments: true,
-      },
+      include: this.subscriptionInclude,
     });
 
     if (!currentSub) {
@@ -657,12 +712,7 @@ export class SubscriptionsService {
             status: SubscriptionStatus.ACTIVE,
             activatedAt: now,
           },
-          include: {
-            member: { include: { user: true } },
-            plan: true,
-            quotas: { include: { serviceType: true } },
-            payments: true,
-          },
+          include: this.subscriptionInclude,
         });
 
         this.logger.log(
@@ -830,15 +880,11 @@ export class SubscriptionsService {
   async cancel(
     id: string,
     dto: CancelSubscriptionDto,
+    actorId?: string,
   ): Promise<SubscriptionDetail> {
     const sub = await this.db.client.subscription.findUnique({
       where: { id },
-      include: {
-        member: { include: { user: true } },
-        plan: true,
-        quotas: { include: { serviceType: true } },
-        payments: true,
-      },
+      include: this.subscriptionInclude,
     });
 
     if (!sub) {
@@ -866,9 +912,7 @@ export class SubscriptionsService {
     }
 
     const updated = await this.db.client.$transaction(async (tx) => {
-      await lockScheduleWrites(tx);
-      await tx.$queryRaw`SELECT id FROM member_profiles WHERE id = ${sub.memberId}::uuid FOR UPDATE`;
-      await tx.$queryRaw`SELECT id FROM subscriptions WHERE id = ${id}::uuid FOR UPDATE`;
+      await this.ptCredits.lockMemberPtDomain(tx, sub.memberId);
       const current = await tx.subscription.findUniqueOrThrow({
         where: { id },
       });
@@ -921,65 +965,33 @@ export class SubscriptionsService {
             referenceType: 'CLASS_BOOKING',
             referenceId: booking.id,
             reason: 'Subscription cancelled: Auto-refund future class booking',
+            createdBy: actorId ?? null,
           },
         });
       }
 
-      // 2. Cancel future PT Bookings and refund quota reserved
-      const futurePtBookings = await tx.ptBooking.findMany({
-        where: {
-          subscriptionId: id,
-          status: BookingStatus.BOOKED,
-          startsAt: { gte: now },
-        },
-      });
-
-      for (const booking of futurePtBookings) {
-        await tx.ptBooking.update({
-          where: { id: booking.id },
-          data: {
-            status: BookingStatus.CANCELLED,
-            cancelledAt: now,
-          },
-        });
-
-        const quota = await tx.subscriptionQuota.findUniqueOrThrow({
-          where: { id: booking.quotaId },
-        });
-        if (quota.allocated !== null)
-          await tx.subscriptionQuota.update({
-            where: { id: booking.quotaId },
-            data: { reserved: { decrement: 1 } },
-          });
-
-        await tx.quotaTransaction.create({
-          data: {
-            quotaId: booking.quotaId,
-            subscriptionId: id,
-            type: QuotaTransactionType.REFUND,
-            reservedDelta: quota.allocated === null ? 0 : -1,
-            idempotencyKey: `cancel-sub-${id}-pt-${booking.id}`,
-            referenceType: 'PT_BOOKING',
-            referenceId: booking.id,
-            reason: 'Subscription cancelled: Auto-refund future PT booking',
-          },
-        });
-      }
-
-      // 3. Update subscription status
-      return tx.subscription.update({
+      // 2. Mark subscription cancelled before re-evaluating PT coverage & legacy source validity
+      await tx.subscription.update({
         where: { id },
         data: {
           status: SubscriptionStatus.CANCELLED,
           cancelledAt: now,
           cancelReason: dto.reason,
         },
-        include: {
-          member: { include: { user: true } },
-          plan: true,
-          quotas: { include: { serviceType: true } },
-          payments: true,
-        },
+      });
+
+      // 3. Handle affected PT bookings & legacy PT purchase status (preserving standalone and other carried finite balances)
+      await this.ptCredits.handleSubscriptionCancelledInTx(tx, {
+        cancelledSubscriptionId: id,
+        memberId: sub.memberId,
+        now,
+        actorId: actorId ?? null,
+        reason: dto.reason,
+      });
+
+      return tx.subscription.findUniqueOrThrow({
+        where: { id },
+        include: this.subscriptionInclude,
       });
     });
 
@@ -1012,6 +1024,14 @@ export class SubscriptionsService {
     ) {
       throw new BadRequestException(
         'Chỉ có thể gia hạn với thanh toán PENDING hoặc PAID.',
+      );
+    }
+    if (
+      dto.paymentMethod &&
+      !['CASH', 'TRANSFER'].includes(dto.paymentMethod.trim().toUpperCase())
+    ) {
+      throw new BadRequestException(
+        'Phương thức thanh toán mới chỉ hỗ trợ CASH hoặc TRANSFER.',
       );
     }
     // 1. Validate source subscription existence and active user account
@@ -1205,10 +1225,13 @@ export class SubscriptionsService {
           },
         });
 
-        // Create fresh quota snapshot from targetPlan entitlements (no usage carryover!)
-        if (targetPlan.entitlements && targetPlan.entitlements.length > 0) {
+        // Create fresh quota snapshot from targetPlan entitlements (after PT cutover, Gym renewals do not mint bundled PT quotas)
+        const renewalEntitlements = (targetPlan.entitlements ?? []).filter(
+          (e) => e.serviceType.code !== ServiceTypeCode.PT,
+        );
+        if (renewalEntitlements.length > 0) {
           await tx.subscriptionQuota.createMany({
-            data: targetPlan.entitlements.map((e) => ({
+            data: renewalEntitlements.map((e) => ({
               subscriptionId: newSub.id,
               serviceTypeId: e.serviceTypeId,
               allocated: e.allocated,
@@ -1243,12 +1266,7 @@ export class SubscriptionsService {
         );
         return tx.subscription.findUniqueOrThrow({
           where: { id: newSub.id },
-          include: {
-            member: { include: { user: true } },
-            plan: true,
-            quotas: { include: { serviceType: true } },
-            payments: true,
-          },
+          include: this.subscriptionInclude,
         });
       });
 

@@ -58,7 +58,7 @@ test('Class Bookings & Attendance Integration Tests', async (t) => {
     body: JSON.stringify({
       email: coachEmail,
       fullName: 'Coach Sarah Yoga',
-      role: 'PT',
+      role: 'TRAINER',
       phone: `098${Math.floor(1000000 + Math.random() * 9000000)}`,
       password: 'CoachPassword@123',
     }),

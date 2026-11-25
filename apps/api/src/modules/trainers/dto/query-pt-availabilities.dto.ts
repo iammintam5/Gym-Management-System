@@ -1,5 +1,6 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsDateString, IsOptional } from 'class-validator';
+import { IsDateString, IsIn, IsOptional } from 'class-validator';
+import { TrainerServiceFilter } from '@gym/contracts';
 
 export class QueryPtAvailabilitiesDto {
   @ApiPropertyOptional({
@@ -17,4 +18,13 @@ export class QueryPtAvailabilitiesDto {
   @IsOptional()
   @IsDateString()
   to?: string;
+
+  @ApiPropertyOptional({
+    enum: [TrainerServiceFilter.PT],
+    description: 'Service filter (only PT supported for 1-on-1 availability)',
+    example: TrainerServiceFilter.PT,
+  })
+  @IsOptional()
+  @IsIn([TrainerServiceFilter.PT])
+  service?: typeof TrainerServiceFilter.PT;
 }

@@ -223,16 +223,16 @@ test('Phase 3 - User Management Integration Tests', async (t) => {
   });
 
   await t.test('5. PATCH /api/users/:id/roles (Role Assignment & Protections)', async (rolesTest) => {
-    await rolesTest.test('Admin assigns STAFF & PT roles to member -> 200', async () => {
+    await rolesTest.test('Admin assigns STAFF & TRAINER roles to member -> 200', async () => {
       const res = await request(`users/${targetMemberId}/roles`, {
         method: 'PATCH',
         token: adminToken,
-        body: JSON.stringify({ roles: ['STAFF', 'PT'] }),
+        body: JSON.stringify({ roles: ['STAFF', 'TRAINER'] }),
       });
       assert.equal(res.status, 200);
       const user = await res.json();
       assert.ok(user.roles.includes('STAFF'));
-      assert.ok(user.roles.includes('PT'));
+      assert.ok(user.roles.includes('TRAINER'));
       assert.equal(user.roles.length, 2);
     });
 

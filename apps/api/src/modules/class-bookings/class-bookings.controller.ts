@@ -61,7 +61,7 @@ export class ClassBookingsController {
   }
 
   @Get('schedule/:scheduleId')
-  @Roles(UserRole.ADMIN, UserRole.STAFF, UserRole.PT)
+  @Roles(UserRole.ADMIN, UserRole.STAFF, UserRole.TRAINER)
   @ApiOperation({ summary: 'Get attendee roster for a class schedule session' })
   @ApiResponse({ status: 200, description: 'List of attendees booked for this schedule' })
   @ApiResponse({ status: 403, description: 'Forbidden if PT is not assigned trainer' })
@@ -89,7 +89,7 @@ export class ClassBookingsController {
   }
 
   @Post(':id/attendance')
-  @Roles(UserRole.ADMIN, UserRole.STAFF, UserRole.PT)
+  @Roles(UserRole.ADMIN, UserRole.STAFF, UserRole.TRAINER)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Mark attendance for an enrolled member (PRESENT or ABSENT)' })
   @ApiResponse({ status: 200, description: 'Attendance recorded successfully' })

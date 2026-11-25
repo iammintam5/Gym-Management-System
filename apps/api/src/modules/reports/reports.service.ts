@@ -24,6 +24,15 @@ interface RawPaymentRecord {
       name: string;
     } | null;
   } | null;
+  ptPurchase?: {
+    id: string;
+    ptPlanId: string | null;
+    packageCodeSnapshot: string | null;
+    packageNameSnapshot: string;
+    ptPlan?: {
+      name: string;
+    } | null;
+  } | null;
 }
 
 interface RawScheduleWithBookings {
@@ -35,7 +44,7 @@ interface RawScheduleWithBookings {
   bookings: Array<{ id: string; status: string }>;
 }
 
-interface RawPtSession {
+interface RawGroupClassSession {
   id: string;
   trainerId: string;
   startsAt: Date;
@@ -77,7 +86,6 @@ export class ReportsService {
       expiringWithin7DaysCount,
       totalCheckinsToday,
       classesConductedCount,
-      ptSessionsCompletedCount,
     ] = await Promise.all([
       this.db.client.paymentRecord.findMany({
         where: {
@@ -116,14 +124,9 @@ export class ReportsService {
       }),
       this.db.client.classSchedule.count({
         where: {
-          startsAt: { gte: startOfMonth, lte: now },
-          status: { not: 'CANCELLED' },
-        },
-      }),
-      this.db.client.ptBooking.count({
-        where: {
-          status: 'COMPLETED',
           startsAt: { gte: startOfMonth },
+          endsAt: { lte: now },
+          status: { not: 'CANCELLED' },
         },
       }),
     ]);
@@ -165,7 +168,7 @@ export class ReportsService {
       operations: {
         totalCheckinsToday,
         classesConductedCount,
-        ptSessionsCompletedCount,
+        ptSessionsCompletedCount: 0,
       },
     };
   }
@@ -189,6 +192,11 @@ export class ReportsService {
         subscription: {
           include: {
             plan: true,
+          },
+        },
+        ptPurchase: {
+          include: {
+            ptPlan: true,
           },
         },
       },
@@ -237,10 +245,24 @@ export class ReportsService {
         item.byMethod.CARD += amt;
       }
 
-      // Group by Plan
+      // Group by Plan / PT Package
       if (raw.subscription) {
         const pId = raw.subscription.planId;
         const pName = raw.subscription.plan?.name ?? 'Unknown Plan';
+        let planEntry = planMap.get(pId);
+        if (!planEntry) {
+          planEntry = { planId: pId, planName: pName, revenue: 0, count: 0 };
+          planMap.set(pId, planEntry);
+        }
+        planEntry.revenue += amt;
+        planEntry.count += 1;
+      } else if (raw.ptPurchase) {
+        const pId =
+          raw.ptPurchase.ptPlanId ??
+          raw.ptPurchase.packageCodeSnapshot ??
+          raw.ptPurchase.id;
+        const pName =
+          raw.ptPurchase.ptPlan?.name ?? raw.ptPurchase.packageNameSnapshot;
         let planEntry = planMap.get(pId);
         if (!planEntry) {
           planEntry = { planId: pId, planName: pName, revenue: 0, count: 0 };
@@ -417,9 +439,10 @@ export class ReportsService {
       : new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
     const to = toStr ? new Date(toStr) : now;
 
-    const completedSessions = await this.db.client.ptBooking.findMany({
+    const completedSessions = await this.db.client.classSchedule.findMany({
       where: {
-        status: 'COMPLETED',
+        status: { not: 'CANCELLED' },
+        endsAt: { lte: now },
         startsAt: { gte: from, lte: to },
       },
       include: {
@@ -438,7 +461,7 @@ export class ReportsService {
       }
     >();
 
-    for (const session of completedSessions as unknown as RawPtSession[]) {
+    for (const session of completedSessions as unknown as RawGroupClassSession[]) {
       const tId = session.trainerId;
       let entry = trainerMap.get(tId);
       if (!entry) {
@@ -471,6 +494,7 @@ export class ReportsService {
     }));
 
     return {
+      basis: 'ENDED_GROUP_CLASSES',
       from: from.toISOString(),
       to: to.toISOString(),
       items,

@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { DatabaseModule } from '../database/database.module';
+import { PtPackagesModule } from '../pt-packages/pt-packages.module';
 import {
   MemberSubscriptionsController,
   SubscriptionsController,
@@ -7,7 +8,7 @@ import {
 import { SubscriptionsService } from './subscriptions.service';
 
 @Module({
-  imports: [DatabaseModule],
+  imports: [DatabaseModule, PtPackagesModule],
   controllers: [SubscriptionsController, MemberSubscriptionsController],
   providers: [SubscriptionsService],
   exports: [SubscriptionsService],

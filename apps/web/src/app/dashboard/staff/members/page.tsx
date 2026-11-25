@@ -79,7 +79,6 @@ interface StaffMemberRecord {
   validWindow: string;
   hasQueuedRenewal: boolean;
   classQuotaShort: string;
-  ptQuotaShort: string;
   rawQuotas: ReadonlyArray<SubscriptionQuotaDetail>;
   status: 'Active' | 'Upcoming' | 'Frozen' | 'Expired' | 'None';
   avatarUrl: string | null;
@@ -457,18 +456,12 @@ export default function StaffMembersDirectoryPage() {
           rawMembers.map((mem) => {
             const sub = primarySubByMember.get(mem.id);
             const classQ = sub?.quotas.find((q) => q.service === 'CLASS');
-            const ptQ = sub?.quotas.find((q) => q.service === 'PT');
 
             const classShort = classQ
               ? classQ.allocated === null
                 ? 'Class: KGH'
                 : `Class: ${Math.max(0, classQ.allocated - classQ.used - classQ.reserved)}/${classQ.allocated}`
               : 'Class: 0/0';
-            const ptShort = ptQ
-              ? ptQ.allocated === null
-                ? 'PT: KGH'
-                : `PT: ${Math.max(0, ptQ.allocated - ptQ.used - ptQ.reserved)}/${ptQ.allocated}`
-              : 'PT: 0/0';
 
             const uiStatus = sub
               ? mapSubStatusToUi(sub.effectiveStatus)
@@ -491,22 +484,23 @@ export default function StaffMembersDirectoryPage() {
                 : 'Chưa đăng ký',
               hasQueuedRenewal,
               classQuotaShort: classShort,
-              ptQuotaShort: ptShort,
-              rawQuotas: (sub?.quotas ?? []).map((q) => ({
-                id: q.id,
-                subscriptionId: sub?.id ?? '',
-                service: q.service,
-                serviceName: q.serviceName,
-                allocated: q.allocated,
-                used: q.used,
-                reserved: q.reserved,
-                unlimited: q.allocated === null,
-                remaining:
-                  q.allocated === null
-                    ? null
-                    : Math.max(0, q.allocated - q.used - q.reserved),
-                updatedAt: '',
-              })),
+              rawQuotas: (sub?.quotas ?? [])
+                .filter((q) => q.service !== 'PT')
+                .map((q) => ({
+                  id: q.id,
+                  subscriptionId: sub?.id ?? '',
+                  service: q.service,
+                  serviceName: q.serviceName,
+                  allocated: q.allocated,
+                  used: q.used,
+                  reserved: q.reserved,
+                  unlimited: q.allocated === null,
+                  remaining:
+                    q.allocated === null
+                      ? null
+                      : Math.max(0, q.allocated - q.used - q.reserved),
+                  updatedAt: '',
+                })),
               status: uiStatus,
               avatarUrl: mem.idPhotoUrl ?? null,
             };
@@ -1113,9 +1107,6 @@ export default function StaffMembersDirectoryPage() {
                           <span className="inline-flex items-center rounded-lg border border-white/[0.08] bg-[#18181C] px-2.5 py-1 font-mono text-zinc-200 transition-colors group-hover:border-[#FF5500]/50 group-hover:text-white">
                             {member.classQuotaShort}
                           </span>
-                          <span className="inline-flex items-center rounded-lg border border-white/[0.08] bg-[#18181C] px-2.5 py-1 font-mono text-zinc-300 transition-colors group-hover:border-[#FF5500]/50 group-hover:text-white">
-                            {member.ptQuotaShort}
-                          </span>
                         </button>
                       ) : (
                         <span className="text-zinc-600">—</span>
@@ -1269,19 +1260,21 @@ export default function StaffMembersDirectoryPage() {
               name: member.fullName,
               subscriptionId: sub.id,
               plan: sub.plan.name,
-              rawQuotas: sub.quotas.map((quota) => ({
-                ...quota,
-                subscriptionId: sub.id,
-                unlimited: quota.allocated === null,
-                updatedAt: sub.updatedAt,
-                remaining:
-                  quota.allocated === null
-                    ? null
-                    : Math.max(
-                        0,
-                        quota.allocated - quota.used - quota.reserved,
-                      ),
-              })),
+              rawQuotas: sub.quotas
+                .filter((q) => q.service !== 'PT')
+                .map((quota) => ({
+                  ...quota,
+                  subscriptionId: sub.id,
+                  unlimited: quota.allocated === null,
+                  updatedAt: sub.updatedAt,
+                  remaining:
+                    quota.allocated === null
+                      ? null
+                      : Math.max(
+                          0,
+                          quota.allocated - quota.used - quota.reserved,
+                        ),
+                })),
             });
           }}
           onCancel={(member, sub) => {
@@ -1838,7 +1831,7 @@ export default function StaffMembersDirectoryPage() {
             {/* Section 1: Dual-Phase Quota Progress Meters */}
             <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
               {quotaTarget.rawQuotas
-                .filter((q) => q.service === 'CLASS' || q.service === 'PT')
+                .filter((q) => q.service === 'CLASS')
                 .map((q) => (
                   <div
                     key={q.id}

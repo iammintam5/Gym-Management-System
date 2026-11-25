@@ -35,11 +35,15 @@ test(
       data: { email: 'staff@example.invalid', passwordHash: 'test' },
     });
     const actor = { id: staff.id, roles: ['STAFF'] };
-    const role = await client.role.create({ data: { code: 'PT', name: 'PT' } });
+    const role = await client.role.create({
+      data: { code: 'TRAINER', name: 'Huấn luyện viên' },
+    });
     async function trainer() {
       return client.employeeProfile.create({
         data: {
           fullName: 'Trainer',
+          canTeachClasses: true,
+          canCoachPt: true,
           user: {
             create: {
               email: randomUUID() + '@example.invalid',
@@ -81,6 +85,7 @@ test(
       });
       const sub = await client.subscription.create({
         data: {
+          assignedTrainerId: trainerB.id,
           memberId: member.id,
           planId: plan.id,
           startDate: new Date(Date.now() - DAY),
@@ -263,7 +268,7 @@ test(
       },
     );
     await t.test(
-      'member PT and class conflicts are checked in both directions',
+      'retired PT records do not prevent a member joining a group class',
       async () => {
         const f = await fixture();
         const slot = await schedule(4);
@@ -276,13 +281,11 @@ test(
           },
           actor,
         );
-        await assert.rejects(
-          classes.createBooking(
-            { memberId: f.member.id, scheduleId: slot.id },
-            actor,
-          ),
-          (e) => e.getStatus() === 409,
+        const enrolled = await classes.createBooking(
+          { memberId: f.member.id, scheduleId: slot.id },
+          actor,
         );
+        assert.equal(enrolled.status, 'BOOKED');
         const g = await fixture();
         await classes.createBooking(
           { memberId: g.member.id, scheduleId: slot.id },
@@ -342,7 +345,7 @@ test(
       },
     );
     await t.test(
-      'rescheduling rejects conflicts with an enrolled member PT booking',
+      'group-class rescheduling ignores retained PT appointments',
       async () => {
         const f = await fixture();
         const slot = await schedule(6);
@@ -361,19 +364,16 @@ test(
           },
           actor,
         );
-        await assert.rejects(
-          schedules.updateSchedule(
-            slot.id,
-            { startsAt: start.toISOString(), endsAt: end.toISOString() },
-            staff.id,
-          ),
-          (e) => e.getStatus() === 409,
+        await schedules.updateSchedule(
+          slot.id,
+          { startsAt: start.toISOString(), endsAt: end.toISOString() },
+          staff.id,
         );
         assert.equal(
           (
             await client.classSchedule.findUnique({ where: { id: slot.id } })
           ).startsAt.getTime(),
-          slot.startsAt.getTime(),
+          start.getTime(),
         );
       },
     );

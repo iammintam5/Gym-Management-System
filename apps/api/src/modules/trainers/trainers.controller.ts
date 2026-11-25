@@ -20,6 +20,7 @@ import {
   AuthUser,
   PtAvailabilityDetail,
   TrainerSummary,
+  StaffPtSlot,
   UserRole,
 } from '@gym/contracts';
 import { Public } from '../../common/decorators/public.decorator';
@@ -28,6 +29,8 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { TrainersService } from './trainers.service';
 import { CreatePtAvailabilityDto } from './dto/create-pt-availability.dto';
 import { QueryPtAvailabilitiesDto } from './dto/query-pt-availabilities.dto';
+import { QueryStaffPtSlotsDto } from './dto/query-staff-pt-slots.dto';
+import { QueryTrainersDto } from './dto/query-trainers.dto';
 
 @ApiTags('Trainers')
 @Controller('trainers')
@@ -37,18 +40,21 @@ export class TrainersController {
   @Get()
   @Public()
   @ApiOperation({
-    summary: 'List all active Personal Trainers',
+    summary:
+      'List active trainers, optionally filtered by service capability (CLASS or PT)',
   })
   @ApiResponse({
     status: 200,
-    description: 'List of active personal trainers',
+    description: 'List of active eligible trainers',
   })
-  async findAllTrainers(): Promise<TrainerSummary[]> {
-    return this.trainersService.findAllActiveTrainers();
+  async findAllTrainers(
+    @Query() query: QueryTrainersDto,
+  ): Promise<TrainerSummary[]> {
+    return this.trainersService.findAllActiveTrainers(query);
   }
 
   @Post('me/availabilities')
-  @Roles(UserRole.PT)
+  @Roles(UserRole.TRAINER)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({
@@ -69,6 +75,19 @@ export class TrainersController {
     return this.trainersService.createAvailability(user.id, dto);
   }
 
+  @Get(':trainerId/pt-slots')
+  @Roles(UserRole.STAFF, UserRole.ADMIN)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Find free 60-minute PT appointments for a member at the counter',
+  })
+  async getStaffPtSlots(
+    @Param('trainerId', ParseUUIDPipe) trainerId: string,
+    @Query() query: QueryStaffPtSlotsDto,
+  ): Promise<StaffPtSlot[]> {
+    return this.trainersService.findStaffPtSlots(trainerId, query);
+  }
+
   @Get(':trainerId/availabilities')
   @Public()
   @ApiOperation({
@@ -86,7 +105,7 @@ export class TrainersController {
   }
 
   @Delete('me/availabilities/:id')
-  @Roles(UserRole.PT, UserRole.ADMIN)
+  @Roles(UserRole.TRAINER, UserRole.ADMIN)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
@@ -109,7 +128,7 @@ export class TrainersController {
   }
 
   @Delete('availabilities/:id')
-  @Roles(UserRole.PT, UserRole.ADMIN)
+  @Roles(UserRole.TRAINER, UserRole.ADMIN)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @ApiOperation({

@@ -192,16 +192,9 @@ export class ClassBookingsService {
           },
         },
       });
-      const overlappingPt = await tx.ptBooking.findFirst({
-        where: {
-          memberId: targetMember.id,
-          status: BookingStatus.BOOKED,
-          startsAt: { lt: schedule.endsAt },
-          endsAt: { gt: schedule.startsAt },
-        },
-      });
-      if (overlappingClass || overlappingPt)
-        throw new ConflictException('Hội viên đã có lịch tập trùng thời gian.');
+      // PT 1–1 is retired; retained PT appointments do not occupy the active class calendar.
+      if (overlappingClass)
+        throw new ConflictException('Hội viên đã có lịch lớp trùng thời gian.');
       // Check active subscription covering class date
       const activeSub = await tx.subscription.findFirst({
         where: {

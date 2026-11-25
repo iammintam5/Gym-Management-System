@@ -26,6 +26,7 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { PtBookingsService } from './pt-bookings.service';
 import { CreatePtBookingDto } from './dto/create-pt-booking.dto';
 import { MarkPtAttendanceDto } from './dto/mark-pt-attendance.dto';
+import { PtBookingActionDto } from './dto/pt-booking-action.dto';
 import { QueryPtBookingsDto } from './dto/query-pt-bookings.dto';
 
 @ApiTags('PT Bookings')
@@ -60,7 +61,7 @@ export class PtBookingsController {
   }
 
   @Post(':id/cancel')
-  @Roles(UserRole.MEMBER, UserRole.STAFF, UserRole.ADMIN, UserRole.PT)
+  @Roles(UserRole.MEMBER, UserRole.STAFF, UserRole.ADMIN, UserRole.TRAINER)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Cancel a PT session booking (> 6h for members, anytime for staff/PT)',
@@ -80,12 +81,13 @@ export class PtBookingsController {
   async cancelBooking(
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto?: PtBookingActionDto,
   ): Promise<PtBookingDetail> {
-    return this.ptBookingsService.cancelBooking(id, user);
+    return this.ptBookingsService.cancelBooking(id, user, dto);
   }
 
   @Post(':id/complete')
-  @Roles(UserRole.PT, UserRole.STAFF, UserRole.ADMIN)
+  @Roles(UserRole.TRAINER, UserRole.STAFF, UserRole.ADMIN)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Confirm PT session completion (consume reserved quota slot)',
@@ -101,12 +103,13 @@ export class PtBookingsController {
   async completeBooking(
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto?: PtBookingActionDto,
   ): Promise<PtBookingDetail> {
-    return this.ptBookingsService.completeBooking(id, user);
+    return this.ptBookingsService.completeBooking(id, user, dto);
   }
 
   @Post(':id/attendance')
-  @Roles(UserRole.PT, UserRole.STAFF, UserRole.ADMIN)
+  @Roles(UserRole.TRAINER, UserRole.STAFF, UserRole.ADMIN)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Mark attendance for PT session (PRESENT or ABSENT)',
@@ -140,7 +143,7 @@ export class PtBookingsController {
   }
 
   @Get('trainer')
-  @Roles(UserRole.PT)
+  @Roles(UserRole.TRAINER)
   @ApiOperation({
     summary: 'Trainer views booked sessions roster',
   })

@@ -5,6 +5,7 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import {
+  normalizePersistedUserRoles,
   UserRole,
   type LoginRequest,
   type LoginResponse,
@@ -44,7 +45,7 @@ const DEMO_ACCOUNTS: ReadonlyArray<{
     password: 'Staff@123456',
   },
   {
-    role: UserRole.PT,
+    role: UserRole.TRAINER,
     label: 'HLV',
     email: 'pt@gym.com',
     password: 'Pt@123456',
@@ -57,10 +58,13 @@ const DEMO_ACCOUNTS: ReadonlyArray<{
   },
 ];
 
-export function resolveRoleDashboardPath(roles: UserRole[]): string {
-  if (roles.includes(UserRole.ADMIN)) return '/dashboard';
-  if (roles.includes(UserRole.STAFF)) return '/dashboard/staff';
-  if (roles.includes(UserRole.PT)) return '/dashboard/schedule';
+export function resolveRoleDashboardPath(
+  roles: readonly (UserRole | string)[],
+): string {
+  const normalized = normalizePersistedUserRoles(roles);
+  if (normalized.includes(UserRole.ADMIN)) return '/dashboard';
+  if (normalized.includes(UserRole.STAFF)) return '/dashboard/staff';
+  if (normalized.includes(UserRole.TRAINER)) return '/dashboard/schedule';
   return '/dashboard/member';
 }
 

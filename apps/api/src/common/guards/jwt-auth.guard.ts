@@ -7,7 +7,7 @@ import {
 import { Reflector } from '@nestjs/core';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
-import { UserRole, type AuthUser } from '@gym/contracts';
+import { normalizeVerifiedUserRoles, type AuthUser } from '@gym/contracts';
 import { IS_PUBLIC_KEY, JWT_AUDIENCE, JWT_ISSUER } from '../constants/auth';
 @Injectable()
 export class JwtAuthGuard implements CanActivate {
@@ -46,17 +46,18 @@ export class JwtAuthGuard implements CanActivate {
         typeof payload.sub !== 'string' ||
         !payload.sub ||
         payload.type !== 'access' ||
-        typeof payload.exp !== 'number' ||
-        !Array.isArray(payload.roles) ||
-        !payload.roles.every((role: unknown) =>
-          Object.values(UserRole).includes(role as UserRole),
-        )
+        typeof payload.exp !== 'number'
       ) {
+        throw new Error('Invalid access claims');
+      }
+      // Normalize legacy 'PT' -> TRAINER only after jwt.verifyAsync succeeds above.
+      const normalizedRoles = normalizeVerifiedUserRoles(payload.roles);
+      if (!normalizedRoles) {
         throw new Error('Invalid access claims');
       }
       request.user = {
         id: payload.sub,
-        roles: payload.roles as UserRole[],
+        roles: normalizedRoles,
         ...(typeof payload.sid === 'string' ? { sessionId: payload.sid } : {}),
       };
       return true;

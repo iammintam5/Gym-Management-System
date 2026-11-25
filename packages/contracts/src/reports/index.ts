@@ -14,6 +14,7 @@ export interface DashboardSummaryReport {
   operations: {
     totalCheckinsToday: number;
     classesConductedCount: number;
+    /** @deprecated PT 1–1 is retired. Kept as zero for older clients. */
     ptSessionsCompletedCount: number;
   };
 }
@@ -70,6 +71,8 @@ export interface ClassUtilizationReport {
 }
 
 export interface TrainerPerformanceReport {
+  /** Current report counts ended, non-cancelled group-class schedules. */
+  basis?: 'ENDED_GROUP_CLASSES';
   from: string;
   to: string;
   items: Array<{

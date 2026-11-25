@@ -36,6 +36,7 @@ import {
   type PaginatedPaymentsResponse,
   type PaymentReceipt,
   type PaymentRecordDetail,
+  type SubscriptionDetail,
 } from '@gym/contracts';
 import { useAuthStore } from '@/stores/auth-store';
 import { DataState } from '@/components/shared/data-state';
@@ -47,6 +48,7 @@ import { TablePagination } from '@/components/shared/table-pagination';
 const PAGE_SIZE = 10;
 
 interface ReceiptRow {
+  isLegacyPt: boolean;
   id: string;
   memberId: string;
   receiptNo: string;
@@ -143,6 +145,7 @@ export default function StaffPosCashierPage() {
   const [refundSubmitting, setRefundSubmitting] = useState(false);
   const hasLoadedRef = useRef(false);
   const [profileMemberId, setProfileMemberId] = useState('');
+
   useEffect(() => {
     const timer = window.setTimeout(() => {
       const query = new URLSearchParams(window.location.search);
@@ -192,7 +195,11 @@ export default function StaffPosCashierPage() {
           memberCode: p.memberCode,
           memberName: p.memberFullName,
           memberId: p.memberId,
-          planName: p.subscription?.planName ?? 'Gói hội viên',
+          isLegacyPt: Boolean(p.ptPurchase),
+          planName:
+            p.subscription?.planName ??
+            p.ptPurchase?.packageName ??
+            'Gói hội viên',
           methodCode: normalizeMethodCode(p.method),
           methodLabel: mapMethodLabel(p.method),
           amount: formatVnd(p.amount),
@@ -297,13 +304,14 @@ export default function StaffPosCashierPage() {
     };
 
     try {
-      await apiClient('/subscriptions', {
+      await apiClient<SubscriptionDetail>('/subscriptions', {
         method: 'POST',
         body: JSON.stringify({
           ...payload,
           idempotencyKey: stableStaffRequestKey(posRequestKey, payload),
         }),
       });
+
       posRequestKey.current = null;
       await loadPosData();
       setPosModalOpen(false);
@@ -327,7 +335,9 @@ export default function StaffPosCashierPage() {
     try {
       await apiClient(`/payments/${rec.id}/confirm`, {
         method: 'POST',
-        body: JSON.stringify({ method: rec.methodCode }),
+        body: JSON.stringify({
+          method: rec.methodCode === 'CARD' ? 'TRANSFER' : rec.methodCode,
+        }),
       });
       await loadPosData();
       setFeedbackMsg(`Đã xác nhận thu tiền cho biên lai ${rec.receiptNo}.`);
@@ -444,6 +454,7 @@ export default function StaffPosCashierPage() {
             <UserPlus className="h-4 w-4 text-[#FF5500]" />
             Đăng ký hội viên mới
           </button>
+
           <button
             type="button"
             onClick={() => {
@@ -627,7 +638,7 @@ export default function StaffPosCashierPage() {
                     </td>
                     <td className="py-3.5 text-right">
                       <div className="inline-flex items-center gap-1.5">
-                        {rec.status === 'Pending' && (
+                        {rec.status === 'Pending' && !rec.isLegacyPt && (
                           <button
                             type="button"
                             onClick={() => void handleConfirmPaid(rec)}
@@ -939,7 +950,26 @@ export default function StaffPosCashierPage() {
               <div className="flex justify-between">
                 <span className="text-zinc-400">Gói tập đăng ký</span>
                 <span className="font-semibold text-white">
-                  {viewingReceipt.subscription.planName}
+                  {viewingReceipt.ptPurchase?.packageName ??
+                    viewingReceipt.subscription.planName}
+                </span>
+              </div>
+              {viewingReceipt.ptPurchase && (
+                <div className="flex justify-between">
+                  <span className="text-zinc-400">Buổi PT</span>
+                  <span className="text-zinc-200">
+                    {viewingReceipt.ptPurchase.sessionCount} buổi ·{' '}
+                    {viewingReceipt.ptPurchase.sessionMinutes} phút/buổi
+                  </span>
+                </div>
+              )}
+              <div className="flex justify-between">
+                <span className="text-zinc-400">Thời điểm thu</span>
+                <span className="text-zinc-200">
+                  {new Date(viewingReceipt.confirmedAt).toLocaleString(
+                    'vi-VN',
+                    { timeZone: 'Asia/Ho_Chi_Minh' },
+                  )}
                 </span>
               </div>
               <div className="flex justify-between">

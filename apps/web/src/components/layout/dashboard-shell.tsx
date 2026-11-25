@@ -13,7 +13,6 @@ import {
   Calendar,
   FileBarChart,
   QrCode,
-  ClipboardCheck,
   Receipt,
   Globe,
   LogOut,
@@ -29,6 +28,7 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 import {
+  normalizePersistedUserRoles,
   UserRole,
   type AuthUserProfile,
   type EmployeeDetail,
@@ -37,7 +37,7 @@ import {
 } from '@gym/contracts';
 import { useAuthStore } from '@/stores/auth-store';
 import { clearTokens } from '@/lib/auth-tokens';
-import { apiClient } from '@/services/api-client';
+import { ApiError, apiClient } from '@/services/api-client';
 import { cn } from '@/lib/utils';
 
 interface NavItem {
@@ -59,7 +59,7 @@ const NAV_ITEMS: ReadonlyArray<NavItem> = [
   },
   {
     href: '/dashboard/trainer',
-    label: 'Huấn luyện viên',
+    label: 'Nhân sự',
     icon: Users,
     allowedRoles: [UserRole.ADMIN],
   },
@@ -73,7 +73,7 @@ const NAV_ITEMS: ReadonlyArray<NavItem> = [
     href: '/dashboard/schedule',
     label: 'Lịch lớp',
     icon: Calendar,
-    allowedRoles: [UserRole.ADMIN, UserRole.STAFF, UserRole.PT],
+    allowedRoles: [UserRole.ADMIN, UserRole.STAFF, UserRole.TRAINER],
   },
   {
     href: '/dashboard/reports',
@@ -113,14 +113,6 @@ const NAV_ITEMS: ReadonlyArray<NavItem> = [
     label: 'Bảo lưu',
     icon: Snowflake,
     allowedRoles: [UserRole.STAFF, UserRole.ADMIN],
-  },
-
-  // PT Views (Trainer Attendance & Availability Slots)
-  {
-    href: '/dashboard/pt',
-    label: 'Điểm danh',
-    icon: ClipboardCheck,
-    allowedRoles: [UserRole.PT],
   },
 
   // MEMBER Views (Member Self-Service Portal)
@@ -183,6 +175,8 @@ export function DashboardShell({ children }: { children: ReactNode }) {
   const [profilePhone, setProfilePhone] = useState('');
   const [profileDob, setProfileDob] = useState('');
   const [profileSpecialization, setProfileSpecialization] = useState('');
+  const [profileCanTeachClasses, setProfileCanTeachClasses] = useState(false);
+
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -193,12 +187,19 @@ export function DashboardShell({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let active = true;
+    if (!user) {
+      loadedUserIdRef.current = null;
+    }
 
     async function fetchProfileAndNotifs() {
-      let currentUser = user;
+      const hasUsableRoles =
+        !!user && normalizePersistedUserRoles(user.roles).length > 0;
+      let currentUser = hasUsableRoles ? user : null;
       if (!currentUser) {
         try {
-          const profile = await apiClient<AuthUserProfile>('/auth/me');
+          const profile = await apiClient<AuthUserProfile>('/auth/me', {
+            skipCache: true,
+          });
           if (active && profile) {
             setUser(profile);
             currentUser = profile;
@@ -219,6 +220,28 @@ export function DashboardShell({ children }: { children: ReactNode }) {
         return;
       }
       loadedUserIdRef.current = currentUser.id;
+
+      if (hasUsableRoles) {
+        try {
+          const freshProfile = await apiClient<AuthUserProfile>('/auth/me', {
+            skipCache: true,
+          });
+          if (!active) return;
+          if (freshProfile) {
+            setUser(freshProfile);
+            currentUser = freshProfile;
+          }
+        } catch (err) {
+          if (err instanceof ApiError && err.status === 401) {
+            if (active) {
+              clearTokens();
+              logout();
+              router.replace('/login');
+            }
+            return;
+          }
+        }
+      }
 
       setProfileFullName(currentUser.fullName ?? '');
       setProfilePhone(currentUser.phone ?? '');
@@ -245,7 +268,8 @@ export function DashboardShell({ children }: { children: ReactNode }) {
 
       const roleProfilePromise = (async () => {
         try {
-          if (currentUser.roles.includes(UserRole.MEMBER)) {
+          const currentRoles = normalizePersistedUserRoles(currentUser.roles);
+          if (currentRoles.includes(UserRole.MEMBER)) {
             const memberMe = await apiClient<MemberDetail>('/members/me');
             if (active) {
               setProfileFullName(memberMe.fullName);
@@ -255,14 +279,15 @@ export function DashboardShell({ children }: { children: ReactNode }) {
               }
             }
           } else if (
-            currentUser.roles.includes(UserRole.PT) ||
-            currentUser.roles.includes(UserRole.STAFF)
+            currentRoles.includes(UserRole.TRAINER) ||
+            currentRoles.includes(UserRole.STAFF)
           ) {
             const empMe = await apiClient<EmployeeDetail>('/employees/me');
             if (active) {
               setProfileFullName(empMe.fullName);
               setProfilePhone(empMe.phone ?? '');
               setProfileSpecialization(empMe.specialization ?? '');
+              setProfileCanTeachClasses(Boolean(empMe.canTeachClasses));
             }
           }
         } catch {
@@ -286,22 +311,23 @@ export function DashboardShell({ children }: { children: ReactNode }) {
     } catch {
       // Ignore logout network error and clear local tokens
     } finally {
+      loadedUserIdRef.current = null;
       clearTokens();
       logout();
       router.replace('/login');
     }
   };
 
-  const userRoles = user?.roles ?? [];
+  const userRoles = normalizePersistedUserRoles(user?.roles);
   const isAdmin = userRoles.includes(UserRole.ADMIN);
   const isMember = userRoles.includes(UserRole.MEMBER);
   const isStaffOnly = userRoles.includes(UserRole.STAFF) && !isAdmin;
   const isPtOnly =
-    userRoles.includes(UserRole.PT) &&
+    userRoles.includes(UserRole.TRAINER) &&
     !isAdmin &&
     !userRoles.includes(UserRole.STAFF);
   const isTrainerOrStaff =
-    userRoles.includes(UserRole.PT) || userRoles.includes(UserRole.STAFF);
+    userRoles.includes(UserRole.TRAINER) || userRoles.includes(UserRole.STAFF);
 
   const rawVisibleNavItems = NAV_ITEMS.filter((item) => {
     if (userRoles.length === 0) return false;
@@ -322,7 +348,6 @@ export function DashboardShell({ children }: { children: ReactNode }) {
     : isPtOnly
       ? [...rawVisibleNavItems].sort((a, b) => {
           const ptPriority: Record<string, number> = {
-            '/dashboard/pt': 1,
             '/dashboard/schedule': 2,
           };
           return (ptPriority[a.href] ?? 99) - (ptPriority[b.href] ?? 99);
@@ -841,26 +866,42 @@ export function DashboardShell({ children }: { children: ReactNode }) {
                     </>
                   )}
                   {isTrainerOrStaff && (
-                    <div>
-                      <label className="block text-[11px] font-medium text-zinc-400">
-                        {userRoles.includes(UserRole.PT)
-                          ? 'Chuyên môn huấn luyện (PT)'
-                          : 'Ca trực / Phụ trách quầy'}
-                      </label>
-                      <input
-                        type="text"
-                        value={profileSpecialization}
-                        onChange={(e) =>
-                          setProfileSpecialization(e.target.value)
-                        }
-                        placeholder={
-                          userRoles.includes(UserRole.PT)
-                            ? 'VD: Strength & Conditioning, HIIT...'
-                            : 'VD: Lễ tân ca sáng, Thu ngân POS...'
-                        }
-                        className="mt-1 h-9 w-full rounded-xl border border-white/[0.08] bg-[#18181C] px-3 text-xs text-white placeholder-zinc-500 focus:border-[#FF5500] focus:outline-none"
-                      />
-                    </div>
+                    <>
+                      <div>
+                        <label className="block text-[11px] font-medium text-zinc-400">
+                          {userRoles.includes(UserRole.TRAINER)
+                            ? 'Chuyên môn huấn luyện'
+                            : 'Ca trực / Phụ trách quầy'}
+                        </label>
+                        <input
+                          type="text"
+                          value={profileSpecialization}
+                          onChange={(e) =>
+                            setProfileSpecialization(e.target.value)
+                          }
+                          placeholder={
+                            userRoles.includes(UserRole.TRAINER)
+                              ? 'VD: Strength & Conditioning, HIIT...'
+                              : 'VD: Lễ tân ca sáng, Thu ngân POS...'
+                          }
+                          className="mt-1 h-9 w-full rounded-xl border border-white/[0.08] bg-[#18181C] px-3 text-xs text-white placeholder-zinc-500 focus:border-[#FF5500] focus:outline-none"
+                        />
+                      </div>
+                      {userRoles.includes(UserRole.TRAINER) && (
+                        <div className="flex items-center gap-2 rounded-xl border border-white/[0.06] bg-[#18181C] p-3 text-[11px] text-zinc-400">
+                          <Lock className="h-3.5 w-3.5 shrink-0 text-[#FF5500]" />
+                          <span>
+                            Dịch vụ phụ trách:{' '}
+                            <strong className="text-zinc-200">
+                              {profileCanTeachClasses
+                                ? 'Lớp nhóm'
+                                : 'Chưa nhận lớp mới'}
+                            </strong>
+                            . Phạm vi phụ trách dịch vụ do Quản trị viên cấp.
+                          </span>
+                        </div>
+                      )}
+                    </>
                   )}
                 </div>
               ) : (

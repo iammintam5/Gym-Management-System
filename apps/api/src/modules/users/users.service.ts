@@ -8,10 +8,13 @@ import {
 } from '@nestjs/common';
 import bcrypt from 'bcryptjs';
 import {
+  defaultEmployeeCapabilitiesForRole,
+  normalizePersistedUserRoles,
   UserRole,
   type PaginatedUsersResponse,
   type UserResponse,
 } from '@gym/contracts';
+import { lockScheduleWrites } from '../common/booking-access';
 import { DatabaseService } from '../database/database.module';
 import type { QueryUsersDto } from './dto/query-users.dto';
 import type { UpdateUserDto } from './dto/update-user.dto';
@@ -40,7 +43,7 @@ export class UsersService {
       id: user.id,
       email: user.email,
       isActive: user.isActive,
-      roles: user.roles.map((r) => r.role.code as UserRole),
+      roles: normalizePersistedUserRoles(user.roles.map((r) => r.role.code)),
       fullName:
         user.employeeProfile?.fullName ?? user.memberProfile?.fullName ?? null,
       phone: user.employeeProfile?.phone ?? user.memberProfile?.phone ?? null,
@@ -210,10 +213,11 @@ export class UsersService {
             },
           });
         } else {
-          const isEmployee = user.roles.some((r) =>
-            [UserRole.ADMIN, UserRole.STAFF, UserRole.PT].includes(
-              r.role.code as UserRole,
-            ),
+          const roleCodes = normalizePersistedUserRoles(
+            user.roles.map((r) => r.role.code),
+          );
+          const isEmployee = roleCodes.some((code) =>
+            [UserRole.ADMIN, UserRole.STAFF, UserRole.TRAINER].includes(code),
           );
           if (isEmployee) {
             await tx.employeeProfile.create({
@@ -221,6 +225,7 @@ export class UsersService {
                 userId: id,
                 fullName: dto.fullName || 'Employee User',
                 phone: dto.phone || null,
+                ...defaultEmployeeCapabilitiesForRole(roleCodes),
               },
             });
           } else {
@@ -327,15 +332,26 @@ export class UsersService {
       );
     }
 
-    await this.db.client.$transaction([
-      this.db.client.userRoleAssignment.deleteMany({ where: { userId: id } }),
-      this.db.client.userRoleAssignment.createMany({
+    await this.db.client.$transaction(async (tx) => {
+      await lockScheduleWrites(tx);
+      await tx.userRoleAssignment.deleteMany({ where: { userId: id } });
+      await tx.userRoleAssignment.createMany({
         data: dbRoles.map((role) => ({
           userId: id,
           roleId: role.id,
         })),
-      }),
-    ]);
+      });
+      if (user.employeeProfile && !targetRoles.includes(UserRole.TRAINER)) {
+        await tx.employeeProfile.update({
+          where: { userId: id },
+          data: {
+            canTeachClasses: false,
+            canCoachPt: false,
+            specialties: [],
+          },
+        });
+      }
+    });
 
     return this.findById(id);
   }

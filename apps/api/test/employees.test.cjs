@@ -99,7 +99,7 @@ test('Phase 5 - Employee Management Integration Tests', async (t) => {
         body: JSON.stringify({
           email: 'unauth.emp2@gym.local',
           fullName: 'Unauth PT',
-          role: 'PT',
+          role: 'TRAINER',
         }),
       });
       assert.equal(ptAttempt.status, 403);
@@ -189,14 +189,14 @@ test('Phase 5 - Employee Management Integration Tests', async (t) => {
       assert.ok(loginData.tokens.accessToken);
     });
 
-    await createTest.test('ADMIN creates PT -> 201/200 success', async () => {
+    await createTest.test('ADMIN creates TRAINER -> 201/200 success', async () => {
       const res = await request('employees', {
         method: 'POST',
         token: adminToken,
         body: JSON.stringify({
           email: testPtEmail,
           fullName: 'Coach Nguyen PT',
-          role: 'PT',
+          role: 'TRAINER',
           phone: '0933445566',
           specialization: 'Bodybuilding & Fitness',
           hiredAt: '2024-04-15',
@@ -209,7 +209,7 @@ test('Phase 5 - Employee Management Integration Tests', async (t) => {
       assert.equal(data.email, testPtEmail);
       assert.equal(data.fullName, 'Coach Nguyen PT');
       assert.equal(data.specialization, 'Bodybuilding & Fitness');
-      assert.deepEqual(data.roles, ['PT']);
+      assert.deepEqual(data.roles, ['TRAINER']);
 
       createdPtId = data.id;
       createdPtCode = data.employeeCode;
@@ -270,13 +270,13 @@ test('Phase 5 - Employee Management Integration Tests', async (t) => {
       assert.ok(searchSpecData.data.some((e) => e.email === testPtEmail));
     });
 
-    await listTest.test('Filter by role (STAFF / PT) works', async () => {
-      const ptFilterRes = await request('employees?role=PT', {
+    await listTest.test('Filter by role (STAFF / TRAINER) works', async () => {
+      const ptFilterRes = await request('employees?role=TRAINER', {
         token: adminToken,
       });
       assert.equal(ptFilterRes.status, 200);
       const ptFilterData = await ptFilterRes.json();
-      assert.ok(ptFilterData.data.every((e) => e.roles.includes('PT')));
+      assert.ok(ptFilterData.data.every((e) => e.roles.includes('TRAINER')));
 
       const staffFilterRes = await request('employees?role=STAFF', {
         token: adminToken,
@@ -462,7 +462,7 @@ test('Phase 5 - Employee Management Integration Tests', async (t) => {
       assert.equal(data.phone, '0977889900');
       assert.equal(data.specialization, 'Advanced Powerlifting & Conditioning');
       assert.equal(data.isActive, true);
-      assert.deepEqual(data.roles, ['PT']);
+      assert.deepEqual(data.roles, ['TRAINER']);
       assert.equal(data.employeeCode, createdPtCode);
     });
   });

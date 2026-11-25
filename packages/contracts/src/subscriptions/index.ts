@@ -64,7 +64,45 @@ export interface SubscriptionSummary {
   status: SubscriptionStatus;
 }
 
+export interface AssignedPtTrainer {
+  id: string;
+  fullName: string;
+}
+
+export interface PtAssignmentDetail {
+  suggestedTrainer?: AssignedPtTrainer | null;
+  subscriptionId: string;
+  memberId: string;
+  memberName: string;
+  memberCode: string;
+  planName: string;
+  startsAt: string;
+  endsAt: string;
+  status: SubscriptionStatus;
+  paymentStatus: PaymentStatus;
+  trainer: AssignedPtTrainer | null;
+  trainerAvailable: boolean;
+  version: number;
+}
+
+export interface AssignPtTrainerInput {
+  trainerId: string;
+  expectedVersion: number;
+  reason?: string;
+}
+
+export interface AssignedPtSlot {
+  availabilityId: string;
+  subscriptionId: string;
+  trainerId: string;
+  trainerName: string;
+  startsAt: string;
+  endsAt: string;
+}
+
 export interface SubscriptionDetail {
+  assignedTrainer?: AssignedPtTrainer | null;
+  ptAssignmentVersion?: number;
   freezeCount?: number;
   id: string;
   memberId: string;

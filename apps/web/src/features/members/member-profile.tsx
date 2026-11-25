@@ -1,5 +1,7 @@
 'use client';
 
+import { MemberPtPackages } from '@/features/pt-packages/member-pt-packages';
+
 import Link from 'next/link';
 import Image from 'next/image';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -127,32 +129,36 @@ function SubscriptionRow({
               </tr>
             </thead>
             <tbody className="divide-y divide-white/[0.06]">
-              {sub.quotas.map((quota) => (
-                <tr key={quota.id}>
-                  <th className="py-3 font-normal text-zinc-300">
-                    {quota.serviceName}
-                  </th>
-                  <td className="px-2 py-3 text-right font-medium text-white">
-                    {quota.allocated === null
-                      ? 'Không giới hạn'
-                      : Math.max(
-                          0,
-                          quota.allocated - quota.used - quota.reserved,
-                        )}
-                  </td>
-                  <td className="px-2 py-3 text-right text-zinc-400">
-                    {quota.used}
-                  </td>
-                  <td className="py-3 text-right text-zinc-400">
-                    {quota.reserved}
-                  </td>
-                </tr>
-              ))}
+              {sub.quotas
+                .filter((quota) => quota.service !== 'PT')
+                .map((quota) => (
+                  <tr key={quota.id}>
+                    <th className="py-3 font-normal text-zinc-300">
+                      {quota.serviceName}
+                    </th>
+                    <td className="px-2 py-3 text-right font-medium text-white">
+                      {quota.allocated === null
+                        ? 'Không giới hạn'
+                        : Math.max(
+                            0,
+                            quota.allocated - quota.used - quota.reserved,
+                          )}
+                    </td>
+                    <td className="px-2 py-3 text-right text-zinc-400">
+                      {quota.used}
+                    </td>
+                    <td className="py-3 text-right text-zinc-400">
+                      {quota.reserved}
+                    </td>
+                  </tr>
+                ))}
             </tbody>
           </table>
           <p className="mt-2 text-xs text-zinc-500">
             {sub.quotas
-              .filter((quota) => quota.allocated !== null)
+              .filter(
+                (quota) => quota.service !== 'PT' && quota.allocated !== null,
+              )
               .map(
                 (quota) =>
                   quota.serviceName + ' được cấp ' + quota.allocated + ' buổi',
@@ -735,6 +741,11 @@ export function MemberProfile({
                       ))}
                     </details>
                   )}
+                  <MemberPtPackages
+                    key={memberId}
+                    memberId={memberId}
+                    onReceipt={(id) => void openReceipt(id)}
+                  />
                 </div>
               )}
               {tab === 'payments' && (
@@ -1012,7 +1023,8 @@ export function MemberProfile({
               <div>
                 <dt className="text-zinc-500">Gói tập</dt>
                 <dd className="mt-1 text-zinc-200">
-                  {receipt.subscription.planName}
+                  {receipt.ptPurchase?.packageName ??
+                    receipt.subscription.planName}
                 </dd>
               </div>
               <div>
@@ -1040,10 +1052,18 @@ export function MemberProfile({
                 </dd>
               </div>
               <div>
-                <dt className="text-zinc-500">Thời hạn gói</dt>
+                <dt className="text-zinc-500">
+                  {receipt.ptPurchase ? 'Buổi PT' : 'Thời hạn gói'}
+                </dt>
                 <dd className="mt-1 text-zinc-200">
-                  {date(receipt.subscription.startDate)} —{' '}
-                  {date(receipt.subscription.endDate)}
+                  {receipt.ptPurchase
+                    ? receipt.ptPurchase.sessionCount +
+                      ' buổi · ' +
+                      receipt.ptPurchase.sessionMinutes +
+                      ' phút/buổi'
+                    : date(receipt.subscription.startDate) +
+                      ' — ' +
+                      date(receipt.subscription.endDate)}
                 </dd>
               </div>
               {receipt.note && (

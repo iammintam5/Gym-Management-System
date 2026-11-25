@@ -106,7 +106,6 @@ test('Phase 8 - Subscription Renewal Integration Tests', async (t) => {
       entitlements: [
         { service: 'GYM_ACCESS', limitType: 'UNLIMITED' },
         { service: 'CLASS', limitType: 'COUNT', limitValue: 20 },
-        { service: 'PT', limitType: 'COUNT', limitValue: 5 },
       ],
     }),
   });
@@ -360,13 +359,10 @@ test('Phase 8 - Subscription Renewal Integration Tests', async (t) => {
       assert.equal(premiumSub.previousSubscriptionId, initialBasicSub.id);
       assert.equal(premiumSub.storedStatus, 'UPCOMING');
 
-      // Verify Premium quotas (3 entitlements) with fresh reset
-      assert.equal(premiumSub.quotas.length, 3);
+      // Verify Premium quotas (Gym and Class) with fresh reset
+      assert.equal(premiumSub.quotas.length, 2);
       const ptQuota = premiumSub.quotas.find((q) => q.service === 'PT');
-      assert.ok(ptQuota);
-      assert.equal(ptQuota.allocated, 5);
-      assert.equal(ptQuota.used, 0);
-      assert.equal(ptQuota.reserved, 0);
+      assert.equal(ptQuota, undefined);
 
       const classQuota = premiumSub.quotas.find((q) => q.service === 'CLASS');
       assert.ok(classQuota);

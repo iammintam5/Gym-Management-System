@@ -5,6 +5,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { DatabaseService } from '../database/database.module';
 import {
@@ -22,6 +23,7 @@ import { CreateFreezeDto } from './dto/create-freeze.dto';
 import { ReviewFreezeDto } from './dto/review-freeze.dto';
 import { QueryFreezesDto } from './dto/query-freezes.dto';
 import { calculateEndDate } from '../subscriptions/helpers/subscription-date.helper';
+import { PtCreditService } from '../pt-packages/pt-credit.service';
 
 interface RawFreezeWithRelations {
   id: string;
@@ -63,8 +65,21 @@ interface RawFreezeWithRelations {
 @Injectable()
 export class SubscriptionFreezesService {
   private readonly logger = new Logger(SubscriptionFreezesService.name);
+  private readonly ptCredits: PtCreditService;
 
-  constructor(private readonly db: DatabaseService) {}
+  constructor(
+    private readonly db: DatabaseService,
+    @Optional() ptCreditService?: PtCreditService,
+  ) {
+    this.ptCredits = ptCreditService ?? new PtCreditService(this.db);
+  }
+
+  private resolveActorId(userId?: string | null): string | null {
+    if (!userId || userId === '00000000-0000-0000-0000-000000000000') {
+      return null;
+    }
+    return userId;
+  }
 
   private readonly freezeInclude = {
     subscription: { include: { member: true, plan: true } },
@@ -77,8 +92,7 @@ export class SubscriptionFreezesService {
       select: { memberId: true },
     });
     if (!reference) throw new NotFoundException('Gói tập không tồn tại.');
-    await tx.$queryRaw`SELECT id FROM member_profiles WHERE id = ${reference.memberId}::uuid FOR UPDATE`;
-    await tx.$queryRaw`SELECT id FROM subscriptions WHERE id = ${id}::uuid FOR UPDATE`;
+    await this.ptCredits.lockMemberPtDomain(tx, reference.memberId);
     return tx.subscription.findUniqueOrThrow({
       where: { id },
       include: { member: { include: { user: true } }, plan: true },
@@ -174,6 +188,7 @@ export class SubscriptionFreezesService {
           'Gói tập đã đạt giới hạn tối đa 2 lần bảo lưu.',
         );
       const approved = staff && dto.autoApprove !== false;
+      const actorId = this.resolveActorId(user.id);
       const created = await tx.subscriptionFreeze.create({
         data: {
           subscriptionId,
@@ -183,15 +198,28 @@ export class SubscriptionFreezesService {
             (endsAt.getTime() - startsAt.getTime()) / 86400000,
           ),
           status: approved ? FreezeStatus.APPROVED : FreezeStatus.REQUESTED,
-          approvedBy: approved ? user.id : null,
+          approvedBy: approved ? actorId : null,
           reason: dto.reason,
         },
       });
-      if (approved && startsAt <= now)
-        await tx.subscription.update({
-          where: { id: subscriptionId },
-          data: { status: SubscriptionStatus.SUSPENDED },
+      if (approved) {
+        if (startsAt <= now) {
+          await tx.subscription.update({
+            where: { id: subscriptionId },
+            data: { status: SubscriptionStatus.SUSPENDED },
+          });
+        }
+        await this.ptCredits.handleFreezeApprovedInTx(tx, {
+          freezeId: created.id,
+          subscriptionId,
+          memberId: sub.memberId,
+          freezeStartsAt: startsAt,
+          freezeEndsAt: endsAt,
+          freezeReason: dto.reason ?? null,
+          actorId,
+          now,
         });
+      }
       return tx.subscriptionFreeze.findUniqueOrThrow({
         where: { id: created.id },
         include: this.freezeInclude,
@@ -211,6 +239,7 @@ export class SubscriptionFreezesService {
     if (!reference)
       throw new NotFoundException('Yêu cầu bảo lưu không tồn tại.');
     const now = new Date();
+    const actorId = this.resolveActorId(user.id);
     const result = await this.db.client.$transaction(async (tx) => {
       const sub = await this.lockSubscription(tx, reference.subscriptionId);
       const freeze = await tx.subscriptionFreeze.findUniqueOrThrow({
@@ -223,13 +252,23 @@ export class SubscriptionFreezesService {
         throw new ConflictException('Tài khoản hội viên đã ngừng hoạt động.');
       await tx.subscriptionFreeze.update({
         where: { id },
-        data: { status: FreezeStatus.APPROVED, approvedBy: user.id },
+        data: { status: FreezeStatus.APPROVED, approvedBy: actorId },
       });
       if (freeze.startsAt <= now)
         await tx.subscription.update({
           where: { id: sub.id },
           data: { status: SubscriptionStatus.SUSPENDED },
         });
+      await this.ptCredits.handleFreezeApprovedInTx(tx, {
+        freezeId: freeze.id,
+        subscriptionId: sub.id,
+        memberId: sub.memberId,
+        freezeStartsAt: freeze.startsAt,
+        freezeEndsAt: freeze.endsAt,
+        freezeReason: freeze.reason,
+        actorId,
+        now,
+      });
       return tx.subscriptionFreeze.findUniqueOrThrow({
         where: { id },
         include: this.freezeInclude,
@@ -281,68 +320,79 @@ export class SubscriptionFreezesService {
     if (!reference)
       throw new NotFoundException('Yêu cầu bảo lưu không tồn tại.');
     const now = targetNow ? new Date(targetNow) : new Date();
-    const result = await this.db.client.$transaction(async (tx) => {
-      const sub = await this.lockSubscription(tx, reference.subscriptionId);
-      const freeze = await tx.subscriptionFreeze.findUniqueOrThrow({
-        where: { id },
-      });
-      if (freeze.restoredAt || freeze.status === FreezeStatus.COMPLETED)
-        throw new ConflictException('Yêu cầu bảo lưu đã được khôi phục.');
-      if (
-        freeze.status !== FreezeStatus.APPROVED ||
-        sub.status === SubscriptionStatus.CANCELLED
-      )
-        throw new BadRequestException(
-          'Yêu cầu bảo lưu hoặc gói tập không còn hợp lệ.',
-        );
-      const elapsed = Math.max(
-        0,
-        Math.min(now.getTime(), freeze.endsAt.getTime()) -
-          freeze.startsAt.getTime(),
-      );
-      const newEndDate = new Date(sub.endDate.getTime() + elapsed);
-      await tx.subscriptionFreeze.update({
-        where: { id },
-        data: { status: FreezeStatus.COMPLETED, restoredAt: now },
-      });
-      await tx.subscription.update({
-        where: { id: sub.id },
-        data: { status: SubscriptionStatus.ACTIVE, endDate: newEndDate },
-      });
-      let parentId = sub.id;
-      let parentEnd = newEndDate;
-      const visited = new Set<string>([parentId]);
-      let child = await tx.subscription.findFirst({
-        where: {
-          previousSubscriptionId: parentId,
-          status: SubscriptionStatus.UPCOMING,
-        },
-        include: { plan: true },
-      });
-      while (child) {
-        if (visited.has(child.id))
-          throw new ConflictException('Chuỗi gia hạn không hợp lệ.');
-        visited.add(child.id);
-        const endDate = calculateEndDate(parentEnd, child.plan.durationDays);
-        await tx.subscription.update({
-          where: { id: child.id },
-          data: { startDate: parentEnd, endDate },
+    const result = await this.db.client.$transaction(
+      async (tx) => {
+        const sub = await this.lockSubscription(tx, reference.subscriptionId);
+        const freeze = await tx.subscriptionFreeze.findUniqueOrThrow({
+          where: { id },
         });
-        parentId = child.id;
-        parentEnd = endDate;
-        child = await tx.subscription.findFirst({
+        if (freeze.restoredAt || freeze.status === FreezeStatus.COMPLETED)
+          throw new ConflictException('Yêu cầu bảo lưu đã được khôi phục.');
+        if (
+          freeze.status !== FreezeStatus.APPROVED ||
+          sub.status === SubscriptionStatus.CANCELLED
+        )
+          throw new BadRequestException(
+            'Yêu cầu bảo lưu hoặc gói tập không còn hợp lệ.',
+          );
+        const elapsed = Math.max(
+          0,
+          Math.min(now.getTime(), freeze.endsAt.getTime()) -
+            freeze.startsAt.getTime(),
+        );
+        const newEndDate = new Date(sub.endDate.getTime() + elapsed);
+        await tx.subscriptionFreeze.update({
+          where: { id },
+          data: { status: FreezeStatus.COMPLETED, restoredAt: now },
+        });
+        await tx.subscription.update({
+          where: { id: sub.id },
+          data: { status: SubscriptionStatus.ACTIVE, endDate: newEndDate },
+        });
+        let parentId = sub.id;
+        let parentEnd = newEndDate;
+        const visited = new Set<string>([parentId]);
+        let child = await tx.subscription.findFirst({
           where: {
             previousSubscriptionId: parentId,
             status: SubscriptionStatus.UPCOMING,
           },
           include: { plan: true },
         });
-      }
-      return tx.subscriptionFreeze.findUniqueOrThrow({
-        where: { id },
-        include: this.freezeInclude,
-      });
-    });
+        while (child) {
+          if (visited.has(child.id))
+            throw new ConflictException('Chuỗi gia hạn không hợp lệ.');
+          visited.add(child.id);
+          const endDate = calculateEndDate(parentEnd, child.plan.durationDays);
+          await tx.subscription.update({
+            where: { id: child.id },
+            data: { startDate: parentEnd, endDate },
+          });
+          parentId = child.id;
+          parentEnd = endDate;
+          child = await tx.subscription.findFirst({
+            where: {
+              previousSubscriptionId: parentId,
+              status: SubscriptionStatus.UPCOMING,
+            },
+            include: { plan: true },
+          });
+        }
+        await this.ptCredits.handleFreezeRestoredInTx(tx, {
+          freezeId: freeze.id,
+          subscriptionId: sub.id,
+          memberId: sub.memberId,
+          actorId: this.resolveActorId(user.id),
+          now,
+        });
+        return tx.subscriptionFreeze.findUniqueOrThrow({
+          where: { id },
+          include: this.freezeInclude,
+        });
+        // Remote database round trips and renewal-chain updates need a bounded budget above Prisma's 5s default.
+      },
+      { timeout: 15000 },
+    );
     this.logger.log(`Restored freeze ${id} by ${user.id}`);
     return this.mapFreezeDetail(result as unknown as RawFreezeWithRelations);
   }
@@ -380,6 +430,16 @@ export class SubscriptionFreezesService {
           await tx.subscription.update({
             where: { id: sub.id },
             data: { status: SubscriptionStatus.SUSPENDED },
+          });
+          await this.ptCredits.handleFreezeApprovedInTx(tx, {
+            freezeId: freeze.id,
+            subscriptionId: sub.id,
+            memberId: sub.memberId,
+            freezeStartsAt: freeze.startsAt,
+            freezeEndsAt: freeze.endsAt,
+            freezeReason: freeze.reason,
+            actorId: null,
+            now,
           });
           activated++;
         }

@@ -77,7 +77,7 @@ test('Classes & Class Schedules Management Integration Tests', async (t) => {
     body: JSON.stringify({
       email: `test.pt.${Date.now()}@gym.local`,
       fullName: 'Coach Test Runner',
-      role: 'PT',
+      role: 'TRAINER',
       phone: `098${Math.floor(1000000 + Math.random() * 9000000)}`,
       password: 'PtPassword@123',
     }),

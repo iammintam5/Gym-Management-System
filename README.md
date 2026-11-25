@@ -1,122 +1,197 @@
-# 🏋️ Gym Management System
+# Aura Gym — Gym Management System
 
-> **Giải pháp số hóa và vận hành phòng tập toàn diện, tối ưu trải nghiệm hội viên và tự động hóa quy trình quản lý với kiến trúc Modular Monolith hiện đại.**
+Hệ thống quản lý phòng gym dành cho quản trị viên, lễ tân, huấn luyện viên và hội viên. Dự án được phát triển trong học phần **Phân tích và Thiết kế Hệ thống**, sử dụng kiến trúc monorepo với Next.js, NestJS và PostgreSQL trên Supabase.
 
----
+## Tính năng
 
-## 🌟 Tính Năng Chính
+- **Quản lý hội viên:** đăng ký, cập nhật hồ sơ và chụp ảnh nhận diện tại quầy.
+- **Quản lý gói tập:** đăng ký, kích hoạt, gia hạn nối tiếp, bảo lưu và hủy gói.
+- **Thu ngân:** thanh toán bằng tiền mặt hoặc chuyển khoản, xuất biên lai và xử lý hoàn tiền theo phân quyền.
+- **Check-in khuôn mặt:** nhận diện tự động tại trạm camera, kiểm tra quyền vào phòng tập và đồng bộ kết quả về màn lễ tân.
+- **Lớp học nhóm:** quản lý lịch học, huấn luyện viên, sức chứa, đặt chỗ và điểm danh.
+- **Hạn mức buổi tập:** theo dõi số buổi được cấp, giữ chỗ, sử dụng và hoàn lại.
+- **Báo cáo:** doanh thu, lượt check-in, tình hình lớp học và hoạt động giảng dạy.
 
-- 🔐 **Xác thực & Phân quyền (RBAC):** 4 vai trò độc lập (`ADMIN`, `STAFF`, `PT`, `MEMBER`) với JWT & Guards.
-- 💳 **Quản lý Hội viên & Gói tập:** Đăng ký gói, tính hạn thẻ, thanh toán, đóng băng & gia hạn thẻ tập.
-- 📊 **Hạn mức buổi tập (Quota Ledger):** Quản lý trừ/hoàn lượt tập an toàn, chống duplicate/race-condition.
-- 📅 **Lịch lớp & Huấn luyện viên (PT):** Đặt lịch lớp học nhóm, đặt lịch kèm 1-1, quản lý lịch rảnh của PT.
-- 🚪 **Điểm danh & Check-in:** Quét mã check-in vào cửa theo thời gian thực và lịch sử ra vào.
-- 📈 **Báo cáo & Thống kê:** Doanh thu, lưu lượng hội viên, hiệu suất làm việc của PT.
+## Vai trò người dùng
 
----
+| Vai trò   | Quyền sử dụng chính                                                             |
+| --------- | ------------------------------------------------------------------------------- |
+| `ADMIN`   | Quản lý hệ thống, nhân viên, HLV, gói tập, lớp học, báo cáo và hoàn tiền        |
+| `STAFF`   | Quản lý hồ sơ hội viên, bán/gia hạn gói, thu ngân, bảo lưu và theo dõi check-in |
+| `TRAINER` | Theo dõi lịch dạy, danh sách học viên và điểm danh lớp được phân công           |
+| `MEMBER`  | Xem hồ sơ, gói tập, thanh toán, đặt/hủy lớp và gửi yêu cầu bảo lưu              |
 
-## 🛠️ Công Nghệ Sử Dụng
+## Công nghệ
 
-| Tầng               | Công nghệ                                                                             |
-| :----------------- | :------------------------------------------------------------------------------------ |
-| **Frontend**       | [Next.js 16 (App Router)](https://nextjs.org), React 19, Tailwind CSS, TanStack Query |
-| **Backend**        | [NestJS 11](https://nestjs.com), RESTful API, Swagger OpenAPI, class-validator        |
-| **Database & ORM** | [PostgreSQL 17](https://www.postgresql.org), [Prisma ORM 7](https://www.prisma.io)    |
-| **Cache & Queue**  | [Redis 7](https://redis.io)                                                           |
-| **Monorepo Tools** | [Turborepo](https://turbo.build), [pnpm](https://pnpm.io), TypeScript (Strict Mode)   |
+| Thành phần          | Công nghệ                                                     |
+| ------------------- | ------------------------------------------------------------- |
+| Frontend            | Next.js 16, React 19, Tailwind CSS, TanStack Query, Zustand   |
+| Backend             | NestJS 11, TypeScript, JWT, Swagger                           |
+| Database            | Supabase PostgreSQL, Prisma ORM 7                             |
+| Nhận diện khuôn mặt | `@vladmandic/face-api`                                        |
+| Monorepo            | pnpm workspaces, Turborepo                                    |
+| Chất lượng mã nguồn | ESLint, Prettier, TypeScript strict mode, Node.js Test Runner |
 
----
+Web truy cập dữ liệu thông qua API NestJS. API kết nối PostgreSQL trên Supabase bằng Prisma; xác thực và phân quyền được xử lý bằng JWT tại backend.
 
-## 📁 Cấu Trúc Dự Án
+## Cấu trúc thư mục
 
 ```text
-gym-management/
+Gym-Management-System/
 ├── apps/
-│   ├── web/               # Next.js Frontend Application (Port 3000)
-│   └── api/               # NestJS Backend API (Port 4000)
-│
+│   ├── api/                  # NestJS API và integration tests
+│   └── web/                  # Next.js web application
 ├── packages/
-│   ├── contracts/         # DTO, Enums, Interfaces dùng chung (Type-safe)
-│   ├── database/          # Prisma schema, migrations, seed script
-│   ├── ui/                # Thư viện UI components tái sử dụng
-│   ├── eslint-config/     # Cấu hình ESLint thống nhất
-│   └── typescript-config/ # Cấu hình TypeScript Strict
-│
-└── docker-compose.yml     # Infrastructure (PostgreSQL 17 + Redis 7)
+│   ├── contracts/            # Kiểu dữ liệu và quy tắc nghiệp vụ dùng chung
+│   ├── database/             # Prisma schema, migrations và seed
+│   ├── ui/                   # Thành phần giao diện dùng chung
+│   ├── eslint-config/
+│   └── typescript-config/
+├── scripts/                  # Thiết lập môi trường và chạy demo
+├── .env.example
+├── pnpm-workspace.yaml
+└── turbo.json
 ```
 
----
+## Cài đặt
 
-## 🚀 Bắt Đầu Nhanh (Quickstart)
+### Yêu cầu
 
-### 1. Yêu cầu hệ thống
+- Node.js **>= 22.12.0**; khuyến nghị Node.js 24 để đồng nhất với CI.
+- pnpm **10.32.1**.
+- Database PostgreSQL trên Supabase và chuỗi kết nối được cấp cho project.
+- Trình duyệt hỗ trợ camera để sử dụng chụp ảnh và check-in khuôn mặt.
 
-- **Node.js** `>= 22.12.0`
-- **pnpm** `>= 10.32.1` (`npm install -g pnpm@10.32.1`)
-- **Docker Desktop**
-
-### 2. Cài đặt và chạy
+### 1. Cài dependencies
 
 ```bash
-# 1. Clone repository & cài đặt dependencies
-pnpm install
-
-# 2. Tạo file cấu hình môi trường (.env)
+git clone https://github.com/iammintam5/Gym-Management-System.git
+cd Gym-Management-System
+npm install -g pnpm@10.32.1
+pnpm install --frozen-lockfile
 pnpm env:setup
+```
 
-# 3. Khởi động PostgreSQL & Redis
-pnpm db:up
+### 2. Cấu hình môi trường
 
-# 4. Migrate và nạp dữ liệu khởi tạo
+`pnpm env:setup` tạo `.env` ở thư mục gốc và sinh JWT secret. Điền chuỗi kết nối PostgreSQL của project Supabase vào `DATABASE_URL` trước khi chạy các lệnh database.
+
+Các biến kết nối trong `.env`:
+
+```dotenv
+NODE_ENV=development
+API_PORT=4100
+WEB_ORIGIN=http://localhost:3000
+DATABASE_URL="<SUPABASE_POSTGRES_CONNECTION_STRING>"
+NEXT_PUBLIC_API_URL=http://127.0.0.1:4100/api
+```
+
+Thay `<SUPABASE_POSTGRES_CONNECTION_STRING>` bằng chuỗi kết nối thực tế. Giữ hai JWT secret riêng biệt do script sinh; không đưa chuỗi kết nối hoặc secret lên Git.
+
+Tạo `apps/web/.env.local`:
+
+```dotenv
+API_INTERNAL_URL=http://127.0.0.1:4100/api
+NEXT_PUBLIC_API_URL=http://127.0.0.1:4100/api
+```
+
+`API_INTERNAL_URL` là địa chỉ API mà proxy của Next.js sử dụng. Nếu đổi cổng backend, cập nhật đồng bộ các URL API. Với cấu hình Supabase này, không cần khởi động PostgreSQL local hoặc Docker để chạy ứng dụng.
+
+### 3. Chuẩn bị database
+
+```bash
+pnpm db:validate
 pnpm db:generate
 pnpm db:deploy
-pnpm db:seed
+```
 
-# 5. Chạy ứng dụng (Development Mode)
+`db:deploy` áp dụng các migration còn thiếu vào database được cấu hình trong `DATABASE_URL`.
+
+Lệnh `pnpm db:seed` chỉ dành cho database phát triển/demo có thể đặt lại: **script xóa dữ liệu nghiệp vụ hiện có rồi nạp dữ liệu mẫu**. Không chạy seed trên database Supabase đang chứa dữ liệu cần giữ.
+
+## Chạy ứng dụng
+
+### Development
+
+```bash
 pnpm dev
 ```
 
----
-
-## 🔗 Endpoint Truy Cập
-
-| Ứng dụng          | Địa chỉ                            | Ghi chú                                  |
-| :---------------- | :--------------------------------- | :--------------------------------------- |
-| **Web Client**    | `http://localhost:3000`            | Giao diện hội viên, nhân viên & quản trị |
-| **API Server**    | `http://localhost:4000/api`        | REST API                                 |
-| **Swagger Docs**  | `http://localhost:4000/api/docs`   | Tài liệu API tương tác trực tiếp         |
-| **Health Check**  | `http://localhost:4000/api/health` | Kiểm tra trạng thái API                  |
-| **Prisma Studio** | `http://localhost:5555`            | Quản lý Database GUI (`pnpm db:studio`)  |
-
----
-
-## 📜 Các Lệnh Scripts Hữu Ích
+### Demo production
 
 ```bash
-# Phát triển & Build
-pnpm dev              # Khởi động toàn bộ dự án với hot-reload
-pnpm build            # Build production cho toàn bộ packages/apps
-pnpm typecheck        # Kiểm tra kiểu TypeScript toàn dự án
-pnpm lint             # Kiểm tra chuẩn mã nguồn (ESLint)
-pnpm format           # Tự động format code với Prettier
-pnpm test             # Chạy bộ Unit Tests
-
-# Quản lý Database
-pnpm db:up            # Bật Postgres & Redis container
-pnpm db:down          # Tắt Postgres & Redis container
-pnpm db:migrate       # Tạo và chạy migration mới (dev)
-pnpm db:deploy        # Áp dụng migration vào database
-pnpm db:seed          # Nạp dữ liệu mẫu
-pnpm db:studio        # Mở giao diện Prisma Studio
+pnpm demo
 ```
 
----
+Lệnh build và khởi động cả API lẫn web. Để sử dụng lại bản build hiện có:
 
-## 📌 Quy Ước Nhóm (Git Workflow)
+```bash
+pnpm demo:start
+```
 
-1. Nhánh chính: `main` (chỉ chứa source code ổn định).
-2. Tạo nhánh tính năng: `feature/<tên-chức-năng>` (VD: `feature/auth-login`, `feature/booking-schedule`).
-3. Luôn chạy kiểm tra trước khi tạo Pull Request:
-   ```bash
-   pnpm typecheck && pnpm lint && pnpm format
-   ```
+Nhấn **Ctrl+C** để dừng demo. Chỉ chạy một phiên dev hoặc demo tại cùng thời điểm. Build lại sau khi thay đổi mã nguồn hoặc cấu hình build.
+
+### Địa chỉ truy cập
+
+| Thành phần   | Địa chỉ theo cấu hình trên                        |
+| ------------ | ------------------------------------------------- |
+| Web          | `http://localhost:3000`                           |
+| Đăng nhập    | `http://localhost:3000/login`                     |
+| API          | `http://localhost:4100/api`                       |
+| Swagger      | `http://localhost:4100/api/docs`                  |
+| Health check | `http://localhost:4100/api/health`                |
+| Trạm camera  | `http://localhost:3000/camera?station=front-desk` |
+
+Camera cần được cấp quyền truy cập và chạy trong ngữ cảnh an toàn (`localhost` hoặc HTTPS). Trạm camera và màn lễ tân phải sử dụng cùng mã trạm.
+
+## Tài khoản demo
+
+Các tài khoản sau có trong dữ liệu seed. Khả năng đăng nhập phụ thuộc vào dữ liệu đã được khởi tạo trong database đang kết nối.
+
+| Vai trò         | Email            | Mật khẩu        |
+| --------------- | ---------------- | --------------- |
+| Quản trị viên   | `admin@gym.com`  | `Admin@123456`  |
+| Lễ tân          | `staff@gym.com`  | `Staff@123456`  |
+| Huấn luyện viên | `pt@gym.com`     | `Pt@123456`     |
+| Hội viên        | `member@gym.com` | `Member@123456` |
+
+Chỉ sử dụng các tài khoản này trong môi trường phát triển/demo.
+
+## Kiểm thử
+
+Chạy các lệnh tuần tự từ thư mục gốc, sau khi dừng dev/demo:
+
+```bash
+pnpm db:generate
+pnpm typecheck
+pnpm lint
+pnpm test
+pnpm build
+```
+
+Bộ kiểm thử gồm contracts, web, integration API và runner demo. Integration API sử dụng PostgreSQL tạm riêng biệt, không sử dụng database Supabase của ứng dụng. Trên Linux cần có `pg_config` và các binary PostgreSQL server (`initdb`, `postgres`, `pg_ctl`), chạy bằng người dùng không phải root. Windows/macOS sử dụng binary từ dependency `embedded-postgres`.
+
+## Lệnh thường dùng
+
+| Lệnh                | Chức năng                     |
+| ------------------- | ----------------------------- |
+| `pnpm dev`          | Phát triển với hot reload     |
+| `pnpm demo`         | Build và chạy demo production |
+| `pnpm demo:start`   | Chạy bản build hiện có        |
+| `pnpm build`        | Build toàn bộ monorepo        |
+| `pnpm typecheck`    | Kiểm tra kiểu dữ liệu         |
+| `pnpm lint`         | Kiểm tra ESLint               |
+| `pnpm test`         | Chạy bộ kiểm thử              |
+| `pnpm format:check` | Kiểm tra định dạng mã nguồn   |
+| `pnpm db:generate`  | Sinh Prisma Client            |
+| `pnpm db:deploy`    | Áp dụng migration             |
+| `pnpm db:studio`    | Mở Prisma Studio              |
+
+## Đóng góp
+
+1. Tạo nhánh `feature/<ten-chuc-nang>` hoặc `fix/<ten-loi>` từ `main`.
+2. Định nghĩa các kiểu dữ liệu dùng chung trong `packages/contracts` trước khi sửa API/web.
+3. Bổ sung kiểm thử phù hợp và hoàn thành các bước kiểm tra trước Pull Request.
+4. Chia commit theo chức năng, mô tả rõ thay đổi và cách kiểm chứng trong Pull Request.
+
+Không commit `.env`, thông tin truy cập Supabase, log, cache hoặc thư mục build. Giữ nguyên các migration đã phát hành và giấy phép đi kèm tài nguyên nhận diện. Thư mục `docs/` được giữ local theo quy ước của repo.

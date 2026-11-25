@@ -16,6 +16,7 @@ import {
   type PaymentReceipt,
 } from '@gym/contracts';
 import { useAuthStore } from '@/stores/auth-store';
+import { SubscriptionFreezeHistory } from './subscription-freeze-history';
 import { SubscriptionQuotaHistory } from './subscription-quota-history';
 import { apiClient } from '@/services/api-client';
 import { formatVnd } from '@/lib/formatters';
@@ -86,6 +87,11 @@ function SubscriptionRow({
     Boolean(state.user?.roles?.includes(UserRole.ADMIN)),
   );
   const due = remaining(sub);
+  const refundedAmount = (sub.payments ?? [])
+    .filter((payment) => payment.status === PaymentStatus.REFUNDED)
+    .reduce((total, payment) => total + payment.amount, 0);
+  const receivedAmount = collected(sub) + refundedAmount;
+  const [registrationOpen, setRegistrationOpen] = useState(false);
   return (
     <article className="border-b border-white/[0.08] py-5 last:border-b-0">
       <div className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-2">
@@ -115,6 +121,7 @@ function SubscriptionRow({
           ? 'Bắt đầu ' + date(sub.startDate)
           : date(sub.startDate) + ' — ' + date(sub.endDate)}
       </p>
+
       {!compact && sub.quotas.length > 0 && (
         <div className="mt-4 overflow-x-auto">
           <table className="w-full text-left text-xs tabular-nums">
@@ -171,14 +178,17 @@ function SubscriptionRow({
         <SubscriptionQuotaHistory key={sub.id} sub={sub} />
       )}
       <div className="mt-4 flex flex-wrap items-start justify-between gap-4">
-        <details className="min-w-0 flex-1 text-sm">
+        <details
+          className="min-w-0 flex-1 text-sm"
+          onToggle={(event) => setRegistrationOpen(event.currentTarget.open)}
+        >
           <summary className="w-fit cursor-pointer text-xs text-zinc-500 hover:text-zinc-200">
-            Chi tiết
+            Thông tin đăng ký
           </summary>
           <div className="mt-4 space-y-4 border-l border-white/10 pl-4">
             <dl className="grid gap-x-8 gap-y-4 sm:grid-cols-2">
               <div>
-                <dt className="text-xs text-zinc-500">Giá mua</dt>
+                <dt className="text-xs text-zinc-500">Giá đăng ký</dt>
                 <dd className="mt-1 text-zinc-200">
                   {formatVnd(sub.agreedPrice)}
                 </dd>
@@ -189,44 +199,50 @@ function SubscriptionRow({
                   <PaymentStatusBadge status={sub.paymentStatus} />
                 </dd>
               </div>
-              <div>
-                <dt className="text-xs text-zinc-500">Đã thu sau hoàn tiền</dt>
-                <dd className="mt-1 text-zinc-200">
-                  {formatVnd(collected(sub))}
-                </dd>
-              </div>
+              {sub.payments && (
+                <div>
+                  <dt className="text-xs text-zinc-500">Đã thu</dt>
+                  <dd className="mt-1 tabular-nums text-zinc-200">
+                    {formatVnd(receivedAmount)}
+                  </dd>
+                </div>
+              )}
+              {refundedAmount > 0 && (
+                <div>
+                  <dt className="text-xs text-zinc-500">Đã hoàn</dt>
+                  <dd className="mt-1 tabular-nums text-zinc-200">
+                    {formatVnd(refundedAmount)}
+                  </dd>
+                </div>
+              )}
+              {due > 0 && (
+                <div>
+                  <dt className="text-xs text-zinc-500">Còn phải thu</dt>
+                  <dd className="mt-1 tabular-nums text-amber-300">
+                    {formatVnd(due)}
+                  </dd>
+                </div>
+              )}
               <div>
                 <dt className="text-xs text-zinc-500">Ngày đăng ký</dt>
                 <dd className="mt-1 text-zinc-200">
                   {date(sub.createdAt, true)}
                 </dd>
               </div>
-              <div>
-                <dt className="text-xs text-zinc-500">Bắt đầu</dt>
-                <dd className="mt-1 text-zinc-200">
-                  {date(sub.startDate, true)}
-                </dd>
-              </div>
-              <div>
-                <dt className="text-xs text-zinc-500">Kết thúc</dt>
-                <dd className="mt-1 text-zinc-200">
-                  {date(sub.endDate, true)}
-                </dd>
-              </div>
+              {compact && (
+                <div>
+                  <dt className="text-xs text-zinc-500">Hạn kết thúc</dt>
+                  <dd className="mt-1 text-zinc-200">{date(sub.endDate)}</dd>
+                </div>
+              )}
               {sub.activatedAt && (
                 <div>
-                  <dt className="text-xs text-zinc-500">Kích hoạt</dt>
+                  <dt className="text-xs text-zinc-500">Ngày kích hoạt</dt>
                   <dd className="mt-1 text-zinc-200">
                     {date(sub.activatedAt, true)}
                   </dd>
                 </div>
               )}
-              <div>
-                <dt className="text-xs text-zinc-500">Bảo lưu</dt>
-                <dd className="mt-1 text-zinc-200">
-                  {sub.freezeCount ?? 0} lần
-                </dd>
-              </div>
               {sub.cancelledAt && (
                 <div>
                   <dt className="text-xs text-zinc-500">Ngày hủy</dt>
@@ -244,18 +260,34 @@ function SubscriptionRow({
                 </div>
               )}
             </dl>
-            {sub.quotas.map((quota) => (
-              <p
-                key={quota.id}
-                className="text-xs leading-relaxed text-zinc-400"
-              >
-                {quota.serviceName} ·{' '}
-                {quota.allocated === null
-                  ? 'Không giới hạn'
-                  : quota.allocated + ' lượt'}{' '}
-                · Đã dùng {quota.used} · Giữ chỗ {quota.reserved}
-              </p>
-            ))}
+            {compact && sub.quotas.length > 0 && (
+              <div>
+                <h4 className="text-xs font-medium text-zinc-300">
+                  Quyền lợi gói
+                </h4>
+                <dl className="mt-2 space-y-2 text-xs">
+                  {sub.quotas.map((quota) => (
+                    <div
+                      key={quota.id}
+                      className="flex flex-wrap justify-between gap-2"
+                    >
+                      <dt className="text-zinc-400">{quota.serviceName}</dt>
+                      <dd className="text-zinc-200">
+                        {quota.allocated === null
+                          ? 'Không giới hạn'
+                          : quota.allocated + ' buổi'}
+                      </dd>
+                    </div>
+                  ))}
+                </dl>
+              </div>
+            )}
+            {registrationOpen && sub.freezeCount !== 0 && (
+              <SubscriptionFreezeHistory
+                subscriptionId={sub.id}
+                endDate={sub.endDate}
+              />
+            )}
           </div>
         </details>
         {isAdmin &&

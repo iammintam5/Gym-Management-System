@@ -26,6 +26,8 @@ import {
   Lock,
   Snowflake,
   ShieldCheck,
+  PanelLeftClose,
+  PanelLeftOpen,
 } from 'lucide-react';
 import {
   normalizePersistedUserRoles,
@@ -183,7 +185,103 @@ export function DashboardShell({ children }: { children: ReactNode }) {
   const [profileSavedMsg, setProfileSavedMsg] = useState('');
   const [profileErrorMsg, setProfileErrorMsg] = useState('');
   const [savingAccount, setSavingAccount] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  const accountMenuRef = useRef<HTMLDivElement>(null);
+  const accountTriggerRef = useRef<HTMLButtonElement>(null);
+  const menuInitialFocus = useRef(0);
   const loadedUserIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      try {
+        setSidebarCollapsed(
+          window.localStorage.getItem('aura-sidebar-collapsed') === '1',
+        );
+      } catch {
+        /* Storage can be unavailable in private browser contexts. */
+      }
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    if (!accountMenuOpen) return;
+    const items =
+      accountMenuRef.current?.querySelectorAll<HTMLButtonElement>(
+        '[role="menuitem"]',
+      );
+    const index = menuInitialFocus.current < 0 ? (items?.length ?? 1) - 1 : 0;
+    items?.[index]?.focus();
+    const dismissOutside = (event: PointerEvent) => {
+      if (!accountMenuRef.current?.contains(event.target as Node))
+        setAccountMenuOpen(false);
+    };
+    document.addEventListener('pointerdown', dismissOutside);
+    return () => document.removeEventListener('pointerdown', dismissOutside);
+  }, [accountMenuOpen]);
+
+  const toggleSidebar = () => {
+    const collapsed = !sidebarCollapsed;
+    setSidebarCollapsed(collapsed);
+    try {
+      window.localStorage.setItem(
+        'aura-sidebar-collapsed',
+        collapsed ? '1' : '0',
+      );
+    } catch {
+      /* Sidebar still works without persisted storage. */
+    }
+  };
+
+  const openAccountSettings = (tab: 'profile' | 'password') => {
+    setAccountMenuOpen(false);
+    setNotifOpen(false);
+    setProfileErrorMsg('');
+    setProfileSavedMsg('');
+    setCurrentPassword('');
+    setNewPassword('');
+    setConfirmPassword('');
+    setAccountTab(tab);
+    setAccountModalOpen(true);
+  };
+
+  const handleAccountMenuKeyDown = (
+    event: import('react').KeyboardEvent<HTMLDivElement>,
+  ) => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      setAccountMenuOpen(false);
+      accountTriggerRef.current?.focus();
+      return;
+    }
+    if (event.key === 'Tab') {
+      if (event.shiftKey) {
+        event.preventDefault();
+        setAccountMenuOpen(false);
+        accountTriggerRef.current?.focus();
+      }
+      return;
+    }
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+    const items = Array.from(
+      event.currentTarget.querySelectorAll<HTMLButtonElement>(
+        '[role="menuitem"]',
+      ),
+    );
+    if (!items.length) return;
+    event.preventDefault();
+    const index = items.indexOf(document.activeElement as HTMLButtonElement);
+    const next =
+      event.key === 'Home'
+        ? 0
+        : event.key === 'End'
+          ? items.length - 1
+          : (index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) %
+            items.length;
+    items[next]?.focus();
+  };
 
   useEffect(() => {
     let active = true;
@@ -306,6 +404,7 @@ export function DashboardShell({ children }: { children: ReactNode }) {
   }, [user, setUser, logout, router]);
 
   const handleLogout = async () => {
+    setAccountMenuOpen(false);
     try {
       await apiClient('/auth/logout', { method: 'POST' });
     } catch {
@@ -359,6 +458,7 @@ export function DashboardShell({ children }: { children: ReactNode }) {
       if (e.key === 'Escape') {
         setAccountModalOpen(false);
         setNotifOpen(false);
+        setAccountMenuOpen(false);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -489,14 +589,30 @@ export function DashboardShell({ children }: { children: ReactNode }) {
         Đến nội dung chính
       </a>
       {/* Desktop Sidebar (IronGym Style) */}
-      <aside className="hidden lg:flex lg:w-[240px] lg:flex-col lg:fixed lg:inset-y-0 border-r border-white/[0.06] bg-[#111114] z-30">
+      <aside
+        id="desktop-sidebar"
+        className={cn(
+          'hidden lg:flex lg:flex-col lg:fixed lg:inset-y-0 border-r border-white/[0.06] bg-[#111114] z-30 transition-[width] duration-200',
+          sidebarCollapsed ? 'lg:w-20' : 'lg:w-[240px]',
+        )}
+      >
         {/* Top Centered Brand Block */}
-        <div className="flex flex-col items-center justify-center pt-8 pb-7 px-6">
+        <div
+          className={cn(
+            'flex flex-col items-center justify-center py-7',
+            sidebarCollapsed ? 'px-3' : 'px-6',
+          )}
+        >
           <Link href="/" className="group flex flex-col items-center gap-2.5">
             <span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-[#FF5500] text-white shadow-[0_8px_24px_rgba(255,85,0,0.35)] transition-transform group-hover:scale-105">
               <Flame className="h-6 w-6 fill-current" />
             </span>
-            <span className="font-display text-lg font-bold uppercase tracking-[0.14em] text-white">
+            <span
+              className={cn(
+                'font-display text-lg font-bold uppercase tracking-[0.14em] text-white',
+                sidebarCollapsed && 'sr-only',
+              )}
+            >
               AURA GYM
             </span>
           </Link>
@@ -515,15 +631,19 @@ export function DashboardShell({ children }: { children: ReactNode }) {
                 key={item.href}
                 href={item.href}
                 aria-current={isActive ? 'page' : undefined}
+                title={sidebarCollapsed ? item.label : undefined}
                 className={cn(
-                  'flex items-center gap-3.5 rounded-xl px-4 py-3 text-sm font-medium transition-all',
+                  'flex h-11 items-center rounded-xl text-sm font-medium transition-colors',
+                  sidebarCollapsed ? 'justify-center' : 'gap-3.5 px-4',
                   isActive
                     ? 'bg-[#FF5500] text-white shadow-[0_6px_20px_rgba(255,85,0,0.3)]'
                     : 'text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200',
                 )}
               >
                 <Icon className="h-4 w-4 shrink-0" />
-                <span>{item.label}</span>
+                <span className={sidebarCollapsed ? 'sr-only' : undefined}>
+                  {item.label}
+                </span>
               </Link>
             );
           })}
@@ -533,18 +653,30 @@ export function DashboardShell({ children }: { children: ReactNode }) {
         <div className="p-4 space-y-1 border-t border-white/[0.06]">
           <Link
             href="/"
-            className="flex items-center gap-3.5 rounded-xl px-4 py-2.5 text-sm font-medium text-zinc-400 transition-colors hover:bg-white/[0.04] hover:text-zinc-200"
+            title={sidebarCollapsed ? 'Trang chủ' : undefined}
+            className={cn(
+              'flex h-10 items-center rounded-xl text-sm font-medium text-zinc-400 transition-colors hover:bg-white/[0.04] hover:text-zinc-200',
+              sidebarCollapsed ? 'justify-center' : 'gap-3.5 px-4',
+            )}
           >
             <Globe className="h-4 w-4 shrink-0" />
-            <span>Trang chủ</span>
+            <span className={sidebarCollapsed ? 'sr-only' : undefined}>
+              Trang chủ
+            </span>
           </Link>
           <button
             type="button"
             onClick={handleLogout}
-            className="flex w-full items-center gap-3.5 rounded-xl px-4 py-2.5 text-sm font-medium text-zinc-400 transition-colors hover:bg-red-500/10 hover:text-red-400"
+            title={sidebarCollapsed ? 'Đăng xuất' : undefined}
+            className={cn(
+              'flex h-10 w-full items-center rounded-xl text-sm font-medium text-zinc-400 transition-colors hover:bg-red-500/10 hover:text-red-400',
+              sidebarCollapsed ? 'justify-center' : 'gap-3.5 px-4',
+            )}
           >
             <LogOut className="h-4 w-4 shrink-0" />
-            <span>Đăng xuất</span>
+            <span className={sidebarCollapsed ? 'sr-only' : undefined}>
+              Đăng xuất
+            </span>
           </button>
         </div>
       </aside>
@@ -628,7 +760,12 @@ export function DashboardShell({ children }: { children: ReactNode }) {
       )}
 
       {/* Main Content Area */}
-      <div className="flex-1 flex flex-col lg:pl-[240px] min-w-0">
+      <div
+        className={cn(
+          'flex-1 flex flex-col min-w-0 transition-[padding] duration-200',
+          sidebarCollapsed ? 'lg:pl-20' : 'lg:pl-[240px]',
+        )}
+      >
         {/* Seamless IronGym Top Utility Header */}
         <header className="sticky top-0 z-20 flex h-16 items-center justify-between border-b border-white/[0.05] px-6 lg:px-8 bg-[#0B0B0E]/90 backdrop-blur-md">
           <div className="flex items-center gap-3">
@@ -640,6 +777,30 @@ export function DashboardShell({ children }: { children: ReactNode }) {
               className="lg:hidden rounded-xl border border-white/10 bg-[#141418] p-2.5 text-zinc-300 hover:text-white"
             >
               <Menu className="h-5 w-5" />
+            </button>
+
+            <button
+              type="button"
+              onClick={toggleSidebar}
+              aria-label={
+                sidebarCollapsed
+                  ? 'Mở rộng thanh điều hướng'
+                  : 'Thu gọn thanh điều hướng'
+              }
+              aria-expanded={!sidebarCollapsed}
+              aria-controls="desktop-sidebar"
+              title={
+                sidebarCollapsed
+                  ? 'Mở rộng thanh điều hướng'
+                  : 'Thu gọn thanh điều hướng'
+              }
+              className="hidden size-9 items-center justify-center rounded-lg text-zinc-400 transition-colors hover:bg-white/5 hover:text-white lg:inline-flex"
+            >
+              {sidebarCollapsed ? (
+                <PanelLeftOpen aria-hidden="true" className="size-[18px]" />
+              ) : (
+                <PanelLeftClose aria-hidden="true" className="size-[18px]" />
+              )}
             </button>
 
             {isStaffOnly && pathname !== '/dashboard/staff' && (
@@ -660,7 +821,10 @@ export function DashboardShell({ children }: { children: ReactNode }) {
               <button
                 type="button"
                 aria-label="Thông báo"
-                onClick={() => setNotifOpen((prev) => !prev)}
+                onClick={() => {
+                  setAccountMenuOpen(false);
+                  setNotifOpen((prev) => !prev);
+                }}
                 className="relative flex h-10 w-10 items-center justify-center rounded-full border border-white/[0.07] bg-[#141418] text-zinc-400 transition-colors hover:border-white/15 hover:text-white"
               >
                 <Bell className="h-4 w-4" />
@@ -729,25 +893,117 @@ export function DashboardShell({ children }: { children: ReactNode }) {
               )}
             </div>
 
-            {/* User Profile & Password Button */}
-            <button
-              type="button"
-              onClick={() => {
-                setNotifOpen(false);
-                setProfileErrorMsg('');
-                setProfileSavedMsg('');
-                setAccountModalOpen(true);
+            <div
+              className="relative"
+              ref={accountMenuRef}
+              onBlurCapture={(event) => {
+                if (!event.currentTarget.contains(event.relatedTarget))
+                  setAccountMenuOpen(false);
               }}
-              className="flex items-center gap-2.5 rounded-full border border-white/[0.07] bg-[#141418] py-1.5 pl-1.5 pr-3.5 transition-colors hover:border-white/20"
             >
-              <div className="flex h-7 w-7 items-center justify-center rounded-full bg-[#FF5500] text-xs font-bold uppercase text-white">
-                {displayName.charAt(0)}
-              </div>
-              <span className="hidden sm:inline-block text-xs font-medium text-zinc-200 capitalize">
-                {displayName}
-              </span>
-              <ChevronDown className="h-3.5 w-3.5 text-zinc-500" />
-            </button>
+              <button
+                ref={accountTriggerRef}
+                id="account-menu-trigger"
+                type="button"
+                aria-label="Menu tài khoản"
+                aria-haspopup="menu"
+                aria-expanded={accountMenuOpen}
+                aria-controls={accountMenuOpen ? 'account-menu' : undefined}
+                onClick={() => {
+                  menuInitialFocus.current = 0;
+                  setNotifOpen(false);
+                  setAccountMenuOpen((prev) => !prev);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+                    event.preventDefault();
+                    menuInitialFocus.current = event.key === 'ArrowUp' ? -1 : 0;
+                    setNotifOpen(false);
+                    setAccountMenuOpen(true);
+                  }
+                }}
+                className="flex items-center gap-2.5 rounded-full border border-white/[0.07] bg-[#141418] py-1.5 pl-1.5 pr-3.5 transition-colors hover:border-white/20"
+              >
+                <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#FF5500] text-xs font-bold uppercase text-white">
+                  {displayName.charAt(0)}
+                </span>
+                <span className="hidden max-w-[160px] truncate text-xs font-medium text-zinc-200 sm:inline-block">
+                  {displayName}
+                </span>
+                <ChevronDown
+                  aria-hidden="true"
+                  className={cn(
+                    'size-3.5 shrink-0 text-zinc-500 transition-transform',
+                    accountMenuOpen && 'rotate-180',
+                  )}
+                />
+              </button>
+              {accountMenuOpen && (
+                <div
+                  id="account-menu"
+                  role="menu"
+                  aria-labelledby="account-menu-trigger"
+                  onKeyDown={handleAccountMenuKeyDown}
+
+                  className="absolute right-0 z-50 mt-2 w-64 max-w-[calc(100vw-2rem)] rounded-xl border border-white/10 bg-[#18181b] p-1.5 shadow-xl"
+                >
+                  <div className="border-b border-white/[0.07] px-3 py-2.5">
+                    <p className="truncate text-sm font-medium text-zinc-100">
+                      {displayName}
+                    </p>
+                    <p className="mt-0.5 break-all text-xs text-zinc-500">
+                      {user?.email}
+                    </p>
+                    <p className="mt-1 text-xs text-zinc-400">
+                      {isAdmin
+                        ? 'Quản trị viên'
+                        : isStaffOnly
+                          ? 'Lễ tân'
+                          : isPtOnly
+                            ? 'Huấn luyện viên'
+                            : 'Hội viên'}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    tabIndex={-1}
+                    onClick={() => openAccountSettings('profile')}
+                    className="mt-1 flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-left text-[13px] text-zinc-300 hover:bg-white/5 focus-visible:bg-white/5"
+                  >
+                    <UserCog
+                      aria-hidden="true"
+                      className="size-4 text-zinc-500"
+                    />
+                    Hồ sơ cá nhân
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    tabIndex={-1}
+                    onClick={() => openAccountSettings('password')}
+                    className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-left text-[13px] text-zinc-300 hover:bg-white/5 focus-visible:bg-white/5"
+                  >
+                    <KeyRound
+                      aria-hidden="true"
+                      className="size-4 text-zinc-500"
+                    />
+                    Đổi mật khẩu
+                  </button>
+                  <div className="my-1 border-t border-white/[0.07]" />
+                  <button
+                    type="button"
+                    role="menuitem"
+                    tabIndex={-1}
+                    onClick={() => void handleLogout()}
+                    className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-left text-[13px] text-zinc-300 hover:bg-red-500/10 hover:text-red-400 focus-visible:bg-red-500/10"
+                  >
+                    <LogOut aria-hidden="true" className="size-4" />
+                    Đăng xuất
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </header>
 

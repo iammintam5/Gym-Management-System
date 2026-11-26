@@ -171,6 +171,15 @@ test('admin/page.tsx offers only Gym and Class when editing Gym plans', async ()
       clearTimeout: () => {},
     },
     __require(name) {
+      if (name === '@/components/ui/toast')
+        return {
+          Toast: 'Toast',
+          useToast: () => ({
+            notification: null,
+            showToast: () => {},
+            dismissToast: () => {},
+          }),
+        };
       if (name === '@/features/pt-bookings/staff-pt-booking')
         return { StaffPtBookingButton: 'StaffPtBookingButton' };
       if (name === '@/features/pt-assignments/pt-assignment')

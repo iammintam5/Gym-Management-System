@@ -1,5 +1,7 @@
 'use client';
 
+import { Toast, useToast } from '@/components/ui/toast';
+
 import { DataState, assertDataLoaded } from '@/components/shared/data-state';
 
 import { ModalFrame } from '@/components/ui/modal-frame';
@@ -122,7 +124,7 @@ export default function MembershipPlansPage() {
   const [formClassQuota, setFormClassQuota] = useState(12);
 
   const [saving, setSaving] = useState(false);
-  const [feedbackMsg, setFeedbackMsg] = useState('');
+  const { notification, showToast, dismissToast } = useToast();
   const [errorMsg, setErrorMsg] = useState('');
   const hasLoadedRef = useRef(false);
 
@@ -315,7 +317,7 @@ export default function MembershipPlansPage() {
           body: JSON.stringify({ entitlements: entitlementsPayload }),
         });
         await loadPlansData();
-        setFeedbackMsg(`Đã cập nhật gói tập "${formName}" và hạn mức dịch vụ.`);
+        showToast(`Đã cập nhật gói tập "${formName}" và hạn mức dịch vụ.`);
       } else {
         await apiClient('/membership-plans', {
           method: 'POST',
@@ -329,7 +331,7 @@ export default function MembershipPlansPage() {
           }),
         });
         await loadPlansData();
-        setFeedbackMsg(`Đã tạo mới gói tập "${formName}".`);
+        showToast(`Đã tạo mới gói tập "${formName}".`);
       }
       setModalOpen(false);
     } catch (err) {
@@ -353,14 +355,15 @@ export default function MembershipPlansPage() {
           p.id === tier.id ? { ...p, isActive: nextActive } : p,
         ),
       );
-      setFeedbackMsg(
+      showToast(
         `Đã chuyển gói "${tier.name}" sang trạng thái ${nextActive ? 'Đang mở bán' : 'Ngừng bán'}.`,
       );
     } catch (err) {
-      setFeedbackMsg(
+      showToast(
         err instanceof Error
           ? err.message
           : 'Không thể cập nhật trạng thái gói tập.',
+        'error',
       );
     }
   };
@@ -430,18 +433,7 @@ export default function MembershipPlansPage() {
         </div>
       </div>
 
-      {feedbackMsg && (
-        <div className="flex items-center justify-between rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-2.5 text-[13px] text-emerald-300">
-          <span>{feedbackMsg}</span>
-          <button
-            type="button"
-            onClick={() => setFeedbackMsg('')}
-            className="text-emerald-300 hover:text-white"
-          >
-            ✕
-          </button>
-        </div>
-      )}
+      <Toast notification={notification} onDismiss={dismissToast} />
 
       {/* Row 1: Tier Pricing Cards (Real Price + Fixed DurationDays + Entitlements) */}
       <div className="grid grid-cols-1 gap-6 pt-2 lg:grid-cols-3">

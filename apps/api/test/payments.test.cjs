@@ -278,7 +278,8 @@ test('Payments & Billing Management Integration Tests', async (t) => {
       assert.equal(res.status, 200);
       const receipt = await res.json();
       assert.ok(receipt.receiptNumber.startsWith('REC-'));
-      assert.equal(receipt.status, undefined); // response conforms to PaymentReceipt
+      assert.equal(receipt.status, 'PAID');
+      assert.equal(receipt.refund, null);
       assert.equal(receipt.currency, 'VND');
       assert.equal(receipt.method, 'TRANSFER');
       assert.ok(receipt.amount > 0);
@@ -358,6 +359,49 @@ test('Payments & Billing Management Integration Tests', async (t) => {
   // Test 8: Admin Issues Refund
   // ========================================================
   await t.test(
+    'refund preview is Admin-only and malformed confirmation cannot change payments',
+    async () => {
+      const denied = await request(
+        'payments/' + initialPaymentId + '/refund-preview',
+        { token: staffToken },
+      );
+      assert.equal(denied.status, 403);
+      const preview = await request(
+        'payments/' + initialPaymentId + '/refund-preview',
+        { token: adminToken },
+      );
+      assert.equal(preview.status, 200);
+      assert.equal((await preview.json()).eligible, true);
+      for (const body of [
+        {
+          reason: '   ',
+          method: 'CASH',
+          expectedAmount: 1200000,
+          confirmedExternal: true,
+        },
+        {
+          reason: 'Test',
+          method: 'TRANSFER',
+          expectedAmount: 1200000,
+          confirmedExternal: true,
+        },
+        {
+          reason: 'Test',
+          method: 'CASH',
+          expectedAmount: 1200000,
+          confirmedExternal: false,
+        },
+      ]) {
+        const res = await request('payments/' + initialPaymentId + '/refund', {
+          method: 'POST',
+          token: adminToken,
+          body: JSON.stringify(body),
+        });
+        assert.equal(res.status, 400);
+      }
+    },
+  );
+  await t.test(
     'POST /api/payments/:id/refund - Admin issues refund successfully',
     async () => {
       const res = await request(`payments/${initialPaymentId}/refund`, {
@@ -365,6 +409,9 @@ test('Payments & Billing Management Integration Tests', async (t) => {
         token: adminToken,
         body: JSON.stringify({
           reason: 'Hội viên đổi ý huỷ gói trong thời hạn hoàn tiền',
+          method: 'CASH',
+          expectedAmount: 1200000,
+          confirmedExternal: true,
         }),
       });
       assert.equal(res.status, 200);
@@ -380,9 +427,46 @@ test('Payments & Billing Management Integration Tests', async (t) => {
   await t.test(
     'GET /api/payments/reconciliation - Cashier revenue breakdown',
     async () => {
-      // 1. Confirm second payment as CASH
+      // The refunded subscription cannot collect its old pending receipt again.
+      assert.equal(
+        (
+          await db.client.paymentRecord.findUnique({
+            where: { id: secondPaymentId },
+          })
+        ).status,
+        'CANCELLED',
+      );
+      const cashMember = await db.client.memberProfile.create({
+        data: {
+          fullName: 'Reconciliation QA',
+          user: {
+            create: {
+              email:
+                'recon-' +
+                require('node:crypto').randomUUID() +
+                '@example.invalid',
+              passwordHash: 'test',
+            },
+          },
+        },
+      });
+      const cashSub = await db.client.subscription.create({
+        data: {
+          memberId: cashMember.id,
+          planId: plan.id,
+          agreedPrice: 500000,
+          startDate: new Date(),
+          endDate: new Date(Date.now() + 86400000),
+          status: 'UPCOMING',
+          paymentStatus: 'PENDING',
+        },
+      });
+      const cashPayment = await db.client.paymentRecord.create({
+        data: { subscriptionId: cashSub.id, amount: 500000, status: 'PENDING' },
+      });
+      // Confirm an independent receipt as CASH.
       const confirmSecond = await request(
-        `payments/${secondPaymentId}/confirm`,
+        `payments/${cashPayment.id}/confirm`,
         {
           method: 'POST',
           token: staffToken,

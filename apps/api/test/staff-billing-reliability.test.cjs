@@ -52,7 +52,7 @@ test(
       });
     }
     await t.test(
-      'partial collection does not grant paid access, full collection does, partial refund revokes it',
+      'partial collection does not grant paid access, full collection does, full subscription refund revokes it',
       async () => {
         const sub = await fixture();
         const first = await payments.createPayment(
@@ -79,11 +79,20 @@ test(
           payments.createPayment(sub.id, { amount: 1, status: 'PAID' }, actor),
           (e) => e.getStatus() === 409,
         );
-        await payments.refundPayment(first.id, { reason: 'Test' }, actor);
+        await payments.refundPayment(
+          first.id,
+          {
+            reason: 'Test',
+            method: 'CASH',
+            expectedAmount: 100,
+            confirmedExternal: true,
+          },
+          { ...actor, roles: ['ADMIN'] },
+        );
         assert.equal(
           (await client.subscription.findUnique({ where: { id: sub.id } }))
             .paymentStatus,
-          'PENDING',
+          'REFUNDED',
         );
       },
     );

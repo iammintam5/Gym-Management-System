@@ -21,6 +21,7 @@ import {
   PaymentReceipt,
   PaymentReconciliationResponse,
   PaymentRecordDetail,
+  PaymentRefundPreview,
   UserRole,
 } from '@gym/contracts';
 import { Roles } from '../../common/decorators/roles.decorator';
@@ -77,6 +78,19 @@ export class PaymentsController {
     @CurrentUser() user: AuthUser,
   ): Promise<PaymentRecordDetail> {
     return this.paymentsService.confirmPayment(id, dto, user);
+  }
+
+  @Get('payments/:id/refund-preview')
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({
+    summary:
+      'Check full unused Gym subscription refund eligibility (Admin only)',
+  })
+  async getRefundPreview(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: AuthUser,
+  ): Promise<PaymentRefundPreview> {
+    return this.paymentsService.getRefundPreview(id, user);
   }
 
   @Post('payments/:id/refund')

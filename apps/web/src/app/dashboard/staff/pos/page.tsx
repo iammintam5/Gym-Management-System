@@ -1,5 +1,6 @@
 'use client';
 
+import { RefundPaymentModal } from '@/features/payments/refund-payment-modal';
 import { MemberQuickView } from '@/features/members/member-quick-view';
 
 import { staffDate } from '@/lib/staff-date';
@@ -141,10 +142,6 @@ export default function StaffPosCashierPage() {
 
   // Modal 3: Refund Payment (`POST /payments/:id/refund` — Admin only)
   const [refundTarget, setRefundTarget] = useState<ReceiptRow | null>(null);
-  const [refundReason, setRefundReason] = useState(
-    'Hoàn tiền theo yêu cầu khách hàng được phê duyệt',
-  );
-  const [refundSubmitting, setRefundSubmitting] = useState(false);
   const hasLoadedRef = useRef(false);
   const [profileMemberId, setProfileMemberId] = useState('');
 
@@ -427,32 +424,6 @@ export default function StaffPosCashierPage() {
     }
   };
 
-  const handleConfirmRefund = async () => {
-    if (!refundTarget || !refundReason.trim()) return;
-    setRefundSubmitting(true);
-    try {
-      await apiClient(`/payments/${refundTarget.id}/refund`, {
-        method: 'POST',
-        body: JSON.stringify({ reason: refundReason.trim() }),
-      });
-      const targetNo = refundTarget.receiptNo;
-      const targetMember = refundTarget.memberName;
-      setRefundTarget(null);
-      await loadPosData();
-      setFeedbackMsg(
-        `Đã hoàn tiền biên lai ${targetNo} cho hội viên ${targetMember}.`,
-      );
-    } catch (err) {
-      setFeedbackMsg(
-        err instanceof ApiClientError
-          ? err.message
-          : 'Không thể hoàn tiền cho giao dịch này.',
-      );
-    } finally {
-      setRefundSubmitting(false);
-    }
-  };
-
   const totalPages = Math.max(1, Math.ceil(receiptTotal / PAGE_SIZE));
   const safePage = Math.min(currentPage, totalPages);
   const paginatedReceipts = receipts;
@@ -710,16 +681,18 @@ export default function StaffPosCashierPage() {
                             Xác nhận thu
                           </button>
                         )}
-                        {isAdmin && rec.status === 'Paid' && (
-                          <button
-                            type="button"
-                            onClick={() => setRefundTarget(rec)}
-                            className="inline-flex h-7 items-center gap-1 rounded-lg border border-amber-500/30 bg-amber-500/10 px-2.5 text-[13px] font-semibold text-amber-400 hover:bg-amber-500/20"
-                          >
-                            <RotateCcw className="h-3 w-3" />
-                            Hoàn tiền
-                          </button>
-                        )}
+                        {isAdmin &&
+                          rec.status === 'Paid' &&
+                          !rec.isLegacyPt && (
+                            <button
+                              type="button"
+                              onClick={() => setRefundTarget(rec)}
+                              className="inline-flex h-7 items-center gap-1 rounded-lg border border-amber-500/30 bg-amber-500/10 px-2.5 text-[13px] font-semibold text-amber-400 hover:bg-amber-500/20"
+                            >
+                              <RotateCcw className="h-3 w-3" />
+                              Hoàn tiền
+                            </button>
+                          )}
                         <button
                           type="button"
                           onClick={() => void handleOpenReceiptModal(rec)}
@@ -1102,6 +1075,58 @@ export default function StaffPosCashierPage() {
               </div>
             </div>
 
+            {viewingReceipt.status === PaymentStatus.REFUNDED && (
+              <div className="mt-4 border-t border-white/10 pt-4 text-sm text-zinc-300">
+                <p className="font-semibold text-amber-300">Đã hoàn tiền</p>
+                {viewingReceipt.refund ? (
+                  <dl className="mt-2 space-y-1">
+                    <div>
+                      <dt className="inline text-zinc-400">
+                        Tổng hoàn cho gói:{' '}
+                      </dt>
+                      <dd className="inline">
+                        {formatVnd(viewingReceipt.refund.amount)}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="inline text-zinc-400">Trả qua: </dt>
+                      <dd className="inline">
+                        {mapMethodLabel(viewingReceipt.refund.method)}
+                      </dd>
+                    </div>
+                    {viewingReceipt.refund.reference && (
+                      <div>
+                        <dt className="inline text-zinc-400">Mã giao dịch: </dt>
+                        <dd className="inline break-all">
+                          {viewingReceipt.refund.reference}
+                        </dd>
+                      </div>
+                    )}
+                    <div>
+                      <dt className="inline text-zinc-400">Thời điểm: </dt>
+                      <dd className="inline">
+                        {new Date(
+                          viewingReceipt.refund.refundedAt,
+                        ).toLocaleString('vi-VN', {
+                          timeZone: 'Asia/Ho_Chi_Minh',
+                        })}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="inline text-zinc-400">Lý do: </dt>
+                      <dd className="inline break-words">
+                        {viewingReceipt.refund.reason}
+                      </dd>
+                    </div>
+                  </dl>
+                ) : (
+                  <p className="mt-1 text-zinc-400">
+                    Giao dịch cũ chưa có thông tin xác nhận chi hoàn.
+                  </p>
+                )}
+              </div>
+            )}
+
             <div className="mt-5 flex justify-end gap-2">
               <button
                 type="button"
@@ -1123,76 +1148,23 @@ export default function StaffPosCashierPage() {
         </ModalFrame>
       )}
 
-      {/* Modal 3: Confirm Refund (Admin Only) */}
       {refundTarget && (
-        <ModalFrame
+        <RefundPaymentModal
+          key={refundTarget.id}
+          paymentId={refundTarget.id}
+          memberName={refundTarget.memberName}
+          memberCode={refundTarget.memberCode}
           onClose={() => setRefundTarget(null)}
-          labelledBy="app-dashboard-staff-pos-page-heading-6"
-          maxWidthClassName="max-w-md"
-        >
-          <div className="w-full max-w-md rounded-2xl border border-white/[0.08] bg-[#141418] p-6 shadow-2xl">
-            <div className="flex items-center justify-between border-b border-white/[0.06] pb-4">
-              <div>
-                <span className="font-mono text-[13px] font-bold text-amber-400">
-                  {refundTarget.receiptNo}
-                </span>
-                <h2
-                  className="text-base font-bold text-white"
-                  id="app-dashboard-staff-pos-page-heading-6"
-                >
-                  Xác nhận hoàn tiền biên lai
-                </h2>
-              </div>
-              <button
-                type="button"
-                onClick={() => setRefundTarget(null)}
-                className="rounded-lg p-1 text-zinc-400 hover:text-white"
-                aria-label="Đóng"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-
-            <p className="mt-3 text-[13px] text-zinc-400">
-              Hoàn trả số tiền{' '}
-              <strong className="text-amber-400">{refundTarget.amount}</strong>{' '}
-              cho hội viên{' '}
-              <strong className="text-white">{refundTarget.memberName}</strong>{' '}
-              ({refundTarget.memberCode}).
-            </p>
-
-            <div className="mt-4">
-              <label className="mb-1.5 block text-[13px] font-medium text-zinc-400">
-                Lý do hoàn tiền bắt buộc
-              </label>
-              <textarea
-                rows={3}
-                value={refundReason}
-                onChange={(e) => setRefundReason(e.target.value)}
-                aria-label="Lý do hoàn tiền"
-                className="w-full rounded-xl border border-white/[0.08] bg-[#18181C] p-3 text-[13px] text-white focus:border-[#FF5500] focus:outline-none"
-              />
-            </div>
-
-            <div className="mt-5 flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setRefundTarget(null)}
-                className="h-9 rounded-xl border border-white/[0.08] bg-[#18181C] px-4 text-[13px] font-medium text-zinc-300"
-              >
-                Đóng
-              </button>
-              <button
-                type="button"
-                disabled={refundSubmitting || !refundReason.trim()}
-                onClick={() => void handleConfirmRefund()}
-                className="h-9 rounded-xl bg-[#FF5500] px-4 text-[13px] font-semibold text-white hover:bg-[#E64D00] disabled:opacity-50"
-              >
-                Xác nhận hoàn tiền
-              </button>
-            </div>
-          </div>
-        </ModalFrame>
+          onRefunded={() => {
+            setRefundTarget(null);
+            void loadPosData();
+            setFeedbackMsg(
+              'Đã ghi nhận hoàn tiền và hủy gói tập của ' +
+                refundTarget.memberName +
+                '.',
+            );
+          }}
+        />
       )}
 
       {quickViewMemberId && (

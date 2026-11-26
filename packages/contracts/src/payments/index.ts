@@ -2,6 +2,34 @@ import { PaymentStatus } from '../common';
 
 export type PaymentMethod = 'CASH' | 'TRANSFER';
 
+export interface RefundPaymentRequest {
+  reason: string;
+  method: PaymentMethod;
+  reference?: string;
+  expectedAmount: number;
+  confirmedExternal: true;
+}
+
+export interface PaymentRefundPreview {
+  subscriptionId: string | null;
+  planName: string;
+  amount: number;
+  receiptCount: number;
+  futureBookingCount: number;
+  deadline: string | null;
+  eligible: boolean;
+  reasons: string[];
+}
+
+export interface PaymentRefundConfirmation {
+  amount: number;
+  method: PaymentMethod;
+  reference: string | null;
+  reason: string;
+  refundedAt: string;
+  refundedBy: string | null;
+}
+
 export interface PaymentPtPurchaseSummary {
   id: string;
   packageCode: string | null;
@@ -35,6 +63,8 @@ export interface PaymentRecordDetail {
 }
 
 export interface PaymentReceipt {
+  status?: PaymentStatus;
+  refund?: PaymentRefundConfirmation | null;
   receiptNumber: string; // e.g. REC-20260923-XXXX
   confirmedAt: string;
   amount: number;

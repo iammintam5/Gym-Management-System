@@ -1,7 +1,10 @@
 'use client';
 
+import { Toast, useToast } from '@/components/ui/toast';
+
 import { DataState, assertDataLoaded } from '@/components/shared/data-state';
 import { TablePagination } from '@/components/shared/table-pagination';
+import { ConfirmDialog } from '@/components/ui/dialog';
 import { StaffFormModal } from '@/components/ui/staff-form-modal';
 import {
   applyEmployeeFormRoleChange,
@@ -119,9 +122,16 @@ export default function TrainerManagementPage() {
     createInitialEmployeeFormState('trainers'),
   );
   const [saving, setSaving] = useState(false);
-  const [feedbackMsg, setFeedbackMsg] = useState('');
+  const { notification, showToast, dismissToast } = useToast();
   const [errorMsg, setErrorMsg] = useState('');
-  const [confirmLockId, setConfirmLockId] = useState<string | null>(null);
+  const [lockTarget, setLockTarget] = useState<{
+    userId: string;
+    id: string;
+    name: string;
+    isTrainer: boolean;
+  } | null>(null);
+  const [pendingStatusId, setPendingStatusId] = useState<string | null>(null);
+  const statusRequestRef = useRef(false);
   const hasLoadedRef = useRef(false);
 
   const loadEmployees = useCallback(async () => {
@@ -267,9 +277,7 @@ export default function TrainerManagementPage() {
           body: JSON.stringify(submission.profilePatch),
         });
         await loadEmployees();
-        setFeedbackMsg(
-          `Đã cập nhật hồ sơ nhân sự ${formState.fullName.trim()}.`,
-        );
+        showToast(`Đã cập nhật hồ sơ nhân sự ${formState.fullName.trim()}.`);
       } else {
         const payload = buildCreateEmployeePayload(formState);
         await apiClient('/employees', {
@@ -277,7 +285,7 @@ export default function TrainerManagementPage() {
           body: JSON.stringify(payload),
         });
         await loadEmployees();
-        setFeedbackMsg(
+        showToast(
           `Đã tạo tài khoản nhân sự mới cho ${formState.fullName.trim()}.`,
         );
       }
@@ -297,6 +305,9 @@ export default function TrainerManagementPage() {
     currentlyActive: boolean,
     isTrainer: boolean,
   ) => {
+    if (statusRequestRef.current) return;
+    statusRequestRef.current = true;
+    setPendingStatusId(empId);
     const nextActive = !currentlyActive;
     try {
       await apiClient(`/users/${userId}/status`, {
@@ -320,15 +331,20 @@ export default function TrainerManagementPage() {
           ),
         );
       }
-      setFeedbackMsg(
+      setLockTarget(null);
+      showToast(
         `Đã chuyển trạng thái tài khoản sang ${nextActive ? 'Đang hoạt động' : 'Tạm khóa'}.`,
       );
     } catch (err) {
-      setFeedbackMsg(
+      showToast(
         err instanceof Error
           ? err.message
           : 'Không thể cập nhật trạng thái tài khoản.',
+        'error',
       );
+    } finally {
+      statusRequestRef.current = false;
+      setPendingStatusId(null);
     }
   };
 
@@ -405,18 +421,7 @@ export default function TrainerManagementPage() {
         </button>
       </div>
 
-      {feedbackMsg && (
-        <div className="flex items-center justify-between rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-2.5 text-[13px] text-emerald-300">
-          <span>{feedbackMsg}</span>
-          <button
-            type="button"
-            onClick={() => setFeedbackMsg('')}
-            className="text-emerald-300 hover:text-white"
-          >
-            ✕
-          </button>
-        </div>
-      )}
+      <Toast notification={notification} onDismiss={dismissToast} />
 
       <div className="rounded-2xl border border-white/[0.06] bg-[#141418] p-6">
         <div className="mb-6 flex flex-col justify-between gap-4 lg:flex-row lg:items-center">
@@ -501,17 +506,20 @@ export default function TrainerManagementPage() {
 
         {directoryTab === 'trainers' ? (
           <div className="overflow-x-auto">
-            <table className="w-full border-collapse text-left">
+            <table
+              aria-label="Huấn luyện viên"
+              className="w-full min-w-[1400px] border-collapse text-left [&_th]:pr-5 [&_td]:pr-5 [&_th:last-child]:pr-0 [&_td:last-child]:pr-0"
+            >
               <thead>
                 <tr className="border-b border-white/[0.06] text-[13px] font-semibold uppercase tracking-wider text-zinc-500">
-                  <th className="pb-4">Huấn luyện viên</th>
-                  <th className="pb-4">Chuyên môn</th>
-                  <th className="pb-4">Dịch vụ</th>
+                  <th className="min-w-[210px] pb-4">Huấn luyện viên</th>
+                  <th className="min-w-[200px] pb-4">Chuyên môn</th>
+                  <th className="min-w-[108px] pb-4">Dịch vụ</th>
                   <th className="pb-4">Ngày vào làm</th>
-                  <th className="pb-4">Liên hệ</th>
-                  <th className="pb-4">Số ca hoàn thành</th>
+                  <th className="min-w-[176px] pb-4">Liên hệ</th>
+                  <th className="pb-4">Ca hoàn thành</th>
                   <th className="pb-4">Tổng giờ dạy</th>
-                  <th className="pb-4">Trạng thái</th>
+                  <th className="min-w-[148px] pb-4">Trạng thái</th>
                   <th className="pb-4 text-right">Thao tác</th>
                 </tr>
               </thead>
@@ -523,7 +531,7 @@ export default function TrainerManagementPage() {
                   >
                     <td className="py-4">
                       <div className="flex items-center gap-3">
-                        <div className="flex h-9 w-9 items-center justify-center rounded-full border border-white/[0.08] bg-[#18181C] text-[13px] font-bold uppercase text-[#FF5500]">
+                        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-white/[0.08] bg-[#18181C] text-[13px] font-bold uppercase text-[#FF5500]">
                           {trainer.name.charAt(0)}
                         </div>
                         <div>
@@ -577,7 +585,7 @@ export default function TrainerManagementPage() {
                       </div>
                     </td>
 
-                    <td className="py-4 tabular-nums text-zinc-300">
+                    <td className="min-w-[116px] whitespace-nowrap py-4 tabular-nums text-zinc-300">
                       {trainer.hiredDate}
                     </td>
 
@@ -590,18 +598,18 @@ export default function TrainerManagementPage() {
                       </p>
                     </td>
 
-                    <td className="py-4 font-semibold tabular-nums text-white">
+                    <td className="whitespace-nowrap py-4 font-semibold tabular-nums text-white">
                       {trainer.completedSessions} buổi
                     </td>
 
-                    <td className="py-4 font-semibold tabular-nums text-[#FF5500]">
+                    <td className="whitespace-nowrap py-4 font-semibold tabular-nums text-[#FF5500]">
                       {trainer.trainingHours}
                     </td>
 
                     <td className="py-4">
                       <span
                         className={cn(
-                          'inline-flex items-center rounded-full border px-3 py-0.5 text-[13px] font-medium',
+                          'inline-flex items-center whitespace-nowrap rounded-full border px-3 py-0.5 text-[13px] font-medium',
                           trainer.status === 'Active'
                             ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-400'
                             : 'border-red-500/40 bg-red-500/10 text-red-400',
@@ -613,8 +621,8 @@ export default function TrainerManagementPage() {
                       </span>
                     </td>
 
-                    <td className="py-4 text-right">
-                      <div className="inline-flex items-center gap-1.5">
+                    <td className="min-w-[192px] whitespace-nowrap py-4 text-right">
+                      <div className="inline-flex items-center gap-1.5 whitespace-nowrap">
                         <button
                           type="button"
                           onClick={() => openEditEmployeeModal(trainer.detail)}
@@ -626,50 +634,45 @@ export default function TrainerManagementPage() {
                         </button>
                         <button
                           type="button"
+                          disabled={pendingStatusId !== null}
+                          aria-busy={pendingStatusId === trainer.id}
                           onClick={() => {
-                            if (
-                              trainer.status === 'Active' &&
-                              confirmLockId !== trainer.id
-                            ) {
-                              setConfirmLockId(trainer.id);
-                              window.setTimeout(() => {
-                                setConfirmLockId((prev) =>
-                                  prev === trainer.id ? null : prev,
-                                );
-                              }, 3000);
-                              return;
+                            if (trainer.status === 'Active') {
+                              setLockTarget({
+                                userId: trainer.userId,
+                                id: trainer.id,
+                                name: trainer.name,
+                                isTrainer: true,
+                              });
+                            } else {
+                              void handleToggleAccountStatus(
+                                trainer.userId,
+                                trainer.id,
+                                false,
+                                true,
+                              );
                             }
-                            setConfirmLockId(null);
-                            void handleToggleAccountStatus(
-                              trainer.userId,
-                              trainer.id,
-                              trainer.status === 'Active',
-                              true,
-                            );
                           }}
                           title={
                             trainer.status === 'Active'
                               ? 'Khóa tài khoản'
                               : 'Mở khóa tài khoản'
                           }
-                          className={cn(
-                            'inline-flex h-7 items-center gap-1 rounded-lg border px-2.5 text-[13px] font-medium transition-colors',
-                            confirmLockId === trainer.id
-                              ? 'border-red-500 bg-red-500 font-semibold text-white'
-                              : 'border-amber-500/30 bg-amber-500/10 text-amber-400 hover:bg-amber-500/20',
-                          )}
+                          className="inline-flex h-8 min-w-[88px] shrink-0 items-center justify-center gap-1 whitespace-nowrap rounded-lg border border-amber-500/30 bg-amber-500/10 px-2.5 text-[13px] font-medium text-amber-400 transition-colors hover:bg-amber-500/20 disabled:cursor-wait disabled:opacity-50"
                         >
                           {trainer.status === 'Active' ? (
                             <>
                               <Lock className="h-3 w-3" />
-                              {confirmLockId === trainer.id
-                                ? 'Xác nhận khóa?'
+                              {pendingStatusId === trainer.id
+                                ? 'Đang xử lý…'
                                 : 'Khóa'}
                             </>
                           ) : (
                             <>
                               <Unlock className="h-3 w-3" />
-                              Mở khóa
+                              {pendingStatusId === trainer.id
+                                ? 'Đang xử lý…'
+                                : 'Mở khóa'}
                             </>
                           )}
                         </button>
@@ -682,15 +685,18 @@ export default function TrainerManagementPage() {
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full border-collapse text-left">
+            <table
+              aria-label="Nhân viên"
+              className="w-full min-w-[1120px] border-collapse text-left [&_th]:pr-5 [&_td]:pr-5 [&_th:last-child]:pr-0 [&_td:last-child]:pr-0"
+            >
               <thead>
                 <tr className="border-b border-white/[0.06] text-[13px] font-semibold uppercase tracking-wider text-zinc-500">
                   <th className="pb-4">Nhân viên</th>
                   <th className="pb-4">Chức danh</th>
                   <th className="pb-4">Phụ trách / Ghi chú</th>
                   <th className="pb-4">Ngày vào làm</th>
-                  <th className="pb-4">Liên hệ</th>
-                  <th className="pb-4">Trạng thái</th>
+                  <th className="min-w-[176px] pb-4">Liên hệ</th>
+                  <th className="min-w-[148px] pb-4">Trạng thái</th>
                   <th className="pb-4 text-right">Thao tác</th>
                 </tr>
               </thead>
@@ -702,7 +708,7 @@ export default function TrainerManagementPage() {
                   >
                     <td className="py-4">
                       <div className="flex items-center gap-3">
-                        <div className="flex h-9 w-9 items-center justify-center rounded-full border border-white/[0.08] bg-[#18181C] text-[13px] font-bold uppercase text-[#FF5500]">
+                        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-white/[0.08] bg-[#18181C] text-[13px] font-bold uppercase text-[#FF5500]">
                           {emp.name.charAt(0)}
                         </div>
                         <div>
@@ -725,7 +731,7 @@ export default function TrainerManagementPage() {
                       {emp.specializationNote}
                     </td>
 
-                    <td className="py-4 tabular-nums text-zinc-300">
+                    <td className="min-w-[116px] whitespace-nowrap py-4 tabular-nums text-zinc-300">
                       {emp.hiredDate}
                     </td>
 
@@ -737,7 +743,7 @@ export default function TrainerManagementPage() {
                     <td className="py-4">
                       <span
                         className={cn(
-                          'inline-flex items-center rounded-full border px-3 py-0.5 text-[13px] font-medium',
+                          'inline-flex items-center whitespace-nowrap rounded-full border px-3 py-0.5 text-[13px] font-medium',
                           emp.status === 'Active'
                             ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-400'
                             : 'border-red-500/40 bg-red-500/10 text-red-400',
@@ -749,8 +755,8 @@ export default function TrainerManagementPage() {
                       </span>
                     </td>
 
-                    <td className="py-4 text-right">
-                      <div className="inline-flex items-center gap-1.5">
+                    <td className="min-w-[192px] whitespace-nowrap py-4 text-right">
+                      <div className="inline-flex items-center gap-1.5 whitespace-nowrap">
                         <button
                           type="button"
                           onClick={() => openEditEmployeeModal(emp.detail)}
@@ -761,45 +767,40 @@ export default function TrainerManagementPage() {
                         </button>
                         <button
                           type="button"
+                          disabled={pendingStatusId !== null}
+                          aria-busy={pendingStatusId === emp.id}
                           onClick={() => {
-                            if (
-                              emp.status === 'Active' &&
-                              confirmLockId !== emp.id
-                            ) {
-                              setConfirmLockId(emp.id);
-                              window.setTimeout(() => {
-                                setConfirmLockId((prev) =>
-                                  prev === emp.id ? null : prev,
-                                );
-                              }, 3000);
-                              return;
+                            if (emp.status === 'Active') {
+                              setLockTarget({
+                                userId: emp.userId,
+                                id: emp.id,
+                                name: emp.name,
+                                isTrainer: false,
+                              });
+                            } else {
+                              void handleToggleAccountStatus(
+                                emp.userId,
+                                emp.id,
+                                false,
+                                false,
+                              );
                             }
-                            setConfirmLockId(null);
-                            void handleToggleAccountStatus(
-                              emp.userId,
-                              emp.id,
-                              emp.status === 'Active',
-                              false,
-                            );
                           }}
-                          className={cn(
-                            'inline-flex h-7 items-center gap-1 rounded-lg border px-2.5 text-[13px] font-medium transition-colors',
-                            confirmLockId === emp.id
-                              ? 'border-red-500 bg-red-500 font-semibold text-white'
-                              : 'border-amber-500/30 bg-amber-500/10 text-amber-400 hover:bg-amber-500/20',
-                          )}
+                          className="inline-flex h-8 min-w-[88px] shrink-0 items-center justify-center gap-1 whitespace-nowrap rounded-lg border border-amber-500/30 bg-amber-500/10 px-2.5 text-[13px] font-medium text-amber-400 transition-colors hover:bg-amber-500/20 disabled:cursor-wait disabled:opacity-50"
                         >
                           {emp.status === 'Active' ? (
                             <>
                               <Lock className="h-3 w-3" />
-                              {confirmLockId === emp.id
-                                ? 'Xác nhận khóa?'
+                              {pendingStatusId === emp.id
+                                ? 'Đang xử lý…'
                                 : 'Khóa'}
                             </>
                           ) : (
                             <>
                               <Unlock className="h-3 w-3" />
-                              Mở khóa
+                              {pendingStatusId === emp.id
+                                ? 'Đang xử lý…'
+                                : 'Mở khóa'}
                             </>
                           )}
                         </button>
@@ -822,6 +823,33 @@ export default function TrainerManagementPage() {
           }
         />
       </div>
+
+      <ConfirmDialog
+        open={lockTarget !== null}
+        title="Khóa tài khoản?"
+        description={
+          lockTarget
+            ? 'Tạm khóa tài khoản của ' +
+              lockTarget.name +
+              '. Người này sẽ không thể đăng nhập hoặc tiếp tục thao tác trên hệ thống cho đến khi được mở khóa.'
+            : ''
+        }
+        confirmLabel="Khóa tài khoản"
+        cancelLabel="Hủy"
+        isSubmitting={pendingStatusId !== null}
+        onClose={() => {
+          if (!statusRequestRef.current) setLockTarget(null);
+        }}
+        onConfirm={() => {
+          if (lockTarget)
+            void handleToggleAccountStatus(
+              lockTarget.userId,
+              lockTarget.id,
+              true,
+              lockTarget.isTrainer,
+            );
+        }}
+      />
 
       {modalOpen && (
         <StaffFormModal

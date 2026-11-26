@@ -116,10 +116,36 @@ function harness(file, apiClient, options = {}) {
     file,
     (name) => {
       if (name === 'react') return react;
+      if (name === '@/components/ui/dialog')
+        return { ConfirmDialog: 'ConfirmDialog' };
+      if (name === '@/components/ui/toast')
+        return {
+          Toast: 'Toast',
+          useToast: () => ({
+            notification: null,
+            showToast: options.onToast ?? (() => {}),
+            dismissToast: () => {},
+          }),
+        };
+      if (name === '@/features/trainers/employee-form')
+        return load(
+          'src/features/trainers/employee-form.ts',
+          (dependency) => {
+            if (dependency === '@gym/contracts') return contracts;
+            throw Error('Unexpected employee form import ' + dependency);
+          },
+          window,
+        );
+      if (name === 'next/navigation')
+        return { useRouter: () => ({ replace() {}, push() {} }) };
+      if (name === '@/components/shared/member-avatar')
+        return { MemberAvatar: 'MemberAvatar' };
       if (name === 'next/image' || name === 'next/link')
         return { default: name === 'next/image' ? 'img' : 'a' };
       if (name === '@/features/members/member-onboarding-modal')
         return { MemberOnboardingModal: 'MemberOnboardingModal' };
+      if (name === '@/features/payments/refund-payment-modal')
+        return { RefundPaymentModal: 'RefundPaymentModal' };
       if (name === '@/features/members/member-quick-view')
         return { MemberQuickView: 'MemberQuickView' };
       if (name === '@/features/members/member-profile-drawer')
@@ -149,8 +175,8 @@ function harness(file, apiClient, options = {}) {
         return {
           useAuthStore: (selector) =>
             selector
-              ? selector({ user: { roles: ['ADMIN'] } })
-              : { user: { roles: ['ADMIN'] } },
+              ? selector({ user: { roles: options.roles ?? ['ADMIN'] } })
+              : { user: { roles: options.roles ?? ['ADMIN'] } },
         };
       if (name === '@/services/api-client')
         return { apiClient, ApiClientError: Error };

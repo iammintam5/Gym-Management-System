@@ -22,6 +22,7 @@ import { DatabaseService } from '../database/database.module';
 import { PtCreditService } from '../pt-packages/pt-credit.service';
 import { CreatePaymentDto } from './dto/create-payment.dto';
 import { ConfirmPaymentDto } from './dto/confirm-payment.dto';
+import { subscriptionRefundPreview } from './refund-policy';
 import { RefundPaymentDto } from './dto/refund-payment.dto';
 import { QueryPaymentsDto } from './dto/query-payments.dto';
 import { ReconciliationQueryDto } from './dto/reconciliation-query.dto';
@@ -33,6 +34,8 @@ import {
   PaymentReceipt,
   PaymentReconciliationResponse,
   PaymentRecordDetail,
+  PaymentRefundPreview,
+  PaymentRefundConfirmation,
   PaymentStatus,
   SubscriptionStatus,
   UserRole,
@@ -423,66 +426,124 @@ export class PaymentsService {
     );
   }
 
+  async getRefundPreview(
+    paymentId: string,
+    user: AuthUser,
+  ): Promise<PaymentRefundPreview> {
+    if (!user.roles.includes(UserRole.ADMIN))
+      throw new ForbiddenException('Chỉ quản trị viên được xử lý hoàn tiền.');
+    const target = await this.resolvePaymentTargetMemberId(paymentId);
+    return this.db.client.$transaction(async (tx) => {
+      await this.ptCredits.lockMemberPtDomain(tx, target.memberId);
+      return subscriptionRefundPreview(tx, paymentId, new Date());
+    });
+  }
+
   async refundPayment(
     paymentId: string,
     dto: RefundPaymentDto,
     user: AuthUser,
   ): Promise<PaymentRecordDetail> {
+    if (!user.roles.includes(UserRole.ADMIN))
+      throw new ForbiddenException('Chỉ quản trị viên được xử lý hoàn tiền.');
+    if (
+      !dto.reason?.trim() ||
+      dto.reason.trim().length > 255 ||
+      !['CASH', 'TRANSFER'].includes(dto.method) ||
+      dto.confirmedExternal !== true ||
+      !Number.isFinite(dto.expectedAmount) ||
+      dto.expectedAmount <= 0 ||
+      (dto.reference?.length ?? 0) > 100 ||
+      (dto.method === 'TRANSFER' && !dto.reference?.trim())
+    ) {
+      throw new BadRequestException(
+        'Cần lý do, phương thức, số tiền và xác nhận đã trả tiền; chuyển khoản phải có mã giao dịch.',
+      );
+    }
     const target = await this.resolvePaymentTargetMemberId(paymentId);
-    const actorId = this.resolveActorId(user.id);
-
-    const refunded = await this.db.client.$transaction(async (tx) => {
-      await this.ptCredits.lockMemberPtDomain(tx, target.memberId);
-
-      const payment = await tx.paymentRecord.findUniqueOrThrow({
-        where: { id: paymentId },
-      });
-      if (payment.status !== PaymentStatus.PAID)
-        throw new BadRequestException(
-          'Chỉ có thể hoàn tiền cho bản ghi đã thanh toán PAID.',
-        );
-
-      const now = new Date();
-      const refundNote = dto.reason
-        ? `[REFUND: ${dto.reason}]`
-        : `[REFUND: ${now.toISOString()}]`;
-
-      await tx.paymentRecord.update({
-        where: { id: paymentId },
-        data: {
-          status: PaymentStatus.REFUNDED,
-          note: payment.note ? `${payment.note} | ${refundNote}` : refundNote,
-        },
-      });
-
-      if (payment.subscriptionId) {
+    const refunded = await this.db.client.$transaction(
+      async (tx) => {
+        // Same locks as booking/attendance; check-in also serializes on the member row.
+        await this.ptCredits.lockMemberPtDomain(tx, target.memberId);
+        const now = new Date();
+        const preview = await subscriptionRefundPreview(tx, paymentId, now);
+        if (!preview.eligible || !preview.subscriptionId)
+          throw new ConflictException(preview.reasons.join(' '));
+        if (!new Prisma.Decimal(dto.expectedAmount).equals(preview.amount))
+          throw new ConflictException(
+            'Số tiền đã thay đổi. Vui lòng kiểm tra lại trước khi xác nhận.',
+          );
+        const subscriptionId = preview.subscriptionId;
+        const records = await tx.paymentRecord.findMany({
+          where: { subscriptionId, status: PaymentStatus.PAID },
+        });
+        for (const payment of records) {
+          const refundNote = '[REFUND: ' + dto.reason.trim() + ']';
+          await tx.paymentRecord.update({
+            where: { id: payment.id },
+            data: {
+              status: PaymentStatus.REFUNDED,
+              note: payment.note
+                ? payment.note + ' | ' + refundNote
+                : refundNote,
+            },
+          });
+          // Immutable structured confirmation, committed together with all financial changes.
+          await tx.auditLog.create({
+            data: {
+              actorId: user.id,
+              action: 'REFUND_PAYMENT',
+              entityType: 'PAYMENT_RECORD',
+              entityId: payment.id,
+              metadata: {
+                subscriptionId,
+                amount: preview.amount,
+                receiptAmount: Number(payment.amount),
+                receiptCount: records.length,
+                method: dto.method,
+                reference: dto.reference?.trim() || null,
+                reason: dto.reason.trim(),
+                refundedAt: now.toISOString(),
+                refundedBy: user.id,
+                confirmedExternal: true,
+              },
+            },
+          });
+        }
+        await tx.paymentRecord.updateMany({
+          where: { subscriptionId, status: PaymentStatus.PENDING },
+          data: { status: PaymentStatus.CANCELLED },
+        });
         await this.ptCredits.syncSubscriptionPaymentInTx(tx, {
-          subscriptionId: payment.subscriptionId,
+          subscriptionId,
           refunded: true,
-          reason: dto.reason ?? null,
-          actorId,
+          reason: dto.reason.trim(),
+          actorId: user.id,
           now,
         });
-      } else if (payment.ptPurchaseId) {
-        await this.ptCredits.syncStandalonePtPurchasePaymentInTx(tx, {
-          ptPurchaseId: payment.ptPurchaseId,
-          refunded: true,
-          reason: dto.reason ?? null,
-          actorId,
-          now,
+        await tx.subscriptionFreeze.updateMany({
+          where: {
+            subscriptionId,
+            status: { in: ['REQUESTED', 'APPROVED'] },
+            restoredAt: null,
+          },
+          data: { status: 'CANCELLED' },
         });
-      } else {
-        throw new ConflictException(
-          'Bản ghi thanh toán không gắn với gói tập hoặc gói PT hợp lệ.',
-        );
-      }
-
-      return tx.paymentRecord.findUniqueOrThrow({
-        where: { id: paymentId },
-        include: this.paymentInclude,
-      });
-    });
-
+        await tx.subscription.update({
+          where: { id: subscriptionId },
+          data: {
+            status: SubscriptionStatus.CANCELLED,
+            cancelledAt: now,
+            cancelReason: 'Hoàn tiền: ' + dto.reason.trim(),
+          },
+        });
+        return tx.paymentRecord.findUniqueOrThrow({
+          where: { id: paymentId },
+          include: this.paymentInclude,
+        });
+      },
+      { maxWait: 10000, timeout: 15000 },
+    );
     return this.mapPaymentDetail(
       refunded as unknown as RawPaymentWithRelations,
     );
@@ -517,7 +578,10 @@ export class PaymentsService {
       );
     }
 
-    if (payment.status !== PaymentStatus.PAID) {
+    if (
+      payment.status !== PaymentStatus.PAID &&
+      payment.status !== PaymentStatus.REFUNDED
+    ) {
       throw new BadRequestException(
         'Chỉ có thể xuất biên lai cho giao dịch đã thanh toán thành công (Status: PAID)',
       );
@@ -542,6 +606,36 @@ export class PaymentsService {
       );
     }
 
+    let refund: PaymentRefundConfirmation | null = null;
+    if (payment.status === PaymentStatus.REFUNDED) {
+      const audit = await this.db.client.auditLog.findFirst({
+        where: {
+          entityId: payment.id,
+          entityType: 'PAYMENT_RECORD',
+          action: 'REFUND_PAYMENT',
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+      const data = audit?.metadata;
+      if (
+        data &&
+        typeof data === 'object' &&
+        !Array.isArray(data) &&
+        typeof data.amount === 'number' &&
+        (data.method === 'CASH' || data.method === 'TRANSFER') &&
+        typeof data.reason === 'string' &&
+        typeof data.refundedAt === 'string'
+      ) {
+        refund = {
+          amount: data.amount,
+          method: data.method,
+          reference: typeof data.reference === 'string' ? data.reference : null,
+          reason: data.reason,
+          refundedAt: data.refundedAt,
+          refundedBy: audit?.actorId ?? null,
+        };
+      }
+    }
     const effectiveConfirmedAt = payment.confirmedAt ?? payment.createdAt;
     const dateStr = effectiveConfirmedAt
       .toISOString()
@@ -581,6 +675,8 @@ export class PaymentsService {
 
     return {
       receiptNumber,
+      status: payment.status as PaymentStatus,
+      refund,
       confirmedAt: effectiveConfirmedAt.toISOString(),
       amount: amountNum,
       currency: payment.currency,
